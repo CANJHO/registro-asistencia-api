@@ -295,9 +295,7 @@ async create(dto: any) {
       .resize(600, 600, { fit: 'cover' })
       .jpeg({ quality: 82 })
       .toFile(out);
-    const url = `${
-      process.env.PUBLIC_BASE_URL || ''
-    }/files/${out.split(/[\\/]/).pop()}`;
+    const url = `/files/${out.split(/[\\/]/).pop()}`;
     await this.ds.query(`UPDATE usuarios SET foto_perfil_url=$2 WHERE id=$1`, [
       id,
       url,
@@ -327,9 +325,7 @@ async create(dto: any) {
     const out = join(dir, `barcode_${id}.png`);
     fs.writeFileSync(out, png);
 
-    const url = `${
-      process.env.PUBLIC_BASE_URL || ''
-    }/files/${out.split(/[\\/]/).pop()}`;
+    const url = `/files/${out.split(/[\\/]/).pop()}`;
 
     // 👇 IMPORTANTE: ya NO intentamos actualizar code_scannable
     await this.ds.query(
@@ -354,9 +350,7 @@ async create(dto: any) {
     const out = join(dir, `qr_${id}.png`);
     await QRCode.toFile(out, code, { margin: 1, width: 512 });
 
-    const url = `${
-      process.env.PUBLIC_BASE_URL || ''
-    }/files/${out.split(/[\\/]/).pop()}`;
+    const url = `/files/${out.split(/[\\/]/).pop()}`;
 
     // 👇 Igual: solo actualizamos la URL, no el code_scannable
     await this.ds.query(

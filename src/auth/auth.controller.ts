@@ -1,4 +1,4 @@
-import { Controller, Post, Body } from '@nestjs/common';
+import { Controller, Post, Body, BadRequestException } from '@nestjs/common';
 import { Public } from '../common/public.decorator';
 import { AuthService } from './auth.service';
 
@@ -6,9 +6,12 @@ import { AuthService } from './auth.service';
 export class AuthController {
   constructor(private auth: AuthService) {}
 
-  @Public() // 👈 IMPORTANTE: ESTA LÍNEA HACE QUE LOGIN NO REQUIERA TOKEN
+  @Public()
   @Post('login')
-  login(@Body() dto: { documento: string; password: string }) {
+  login(@Body() dto: { documento?: string; password?: string }) {
+    if (!dto?.documento || !dto?.password) {
+      throw new BadRequestException('Body inválido: se requiere { documento, password }');
+    }
     return this.auth.login(dto.documento, dto.password);
   }
 }

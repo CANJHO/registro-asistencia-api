@@ -5,6 +5,10 @@ import * as fs from 'fs';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 
+// ✅ NUEVO: regeneración en memoria cuando Render borra uploads
+import * as QRCode from 'qrcode';
+const bwipjs = require('bwip-js');
+
 @Injectable()
 export class EmpleadosService {
   constructor(private readonly ds: DataSource) {}
@@ -69,14 +73,9 @@ export class EmpleadosService {
   // ============================
   // LISTADO DE EMPLEADOS (PANEL)
   // ============================
-  async listarEmpleados(
-    pagina: number,
-    limite: number,
-    buscar?: string,
-  ) {
+  async listarEmpleados(pagina: number, limite: number, buscar?: string) {
     const paginaSafe = pagina && pagina > 0 ? pagina : 1;
-    const limiteSafe =
-      !limite || limite < 1 ? 20 : limite > 100 ? 100 : limite;
+    const limiteSafe = !limite || limite < 1 ? 20 : limite > 100 ? 100 : limite;
     const offset = (paginaSafe - 1) * limiteSafe;
 
     let filas: any[] = [];
@@ -251,10 +250,7 @@ export class EmpleadosService {
   // FOTO DE PERFIL (Sharp)
   // ============================
   async actualizarFotoPerfil(id: string, archivo: Express.Multer.File) {
-    const usuario = await this.ds.query(
-      `SELECT id FROM usuarios WHERE id = $1 LIMIT 1`,
-      [id],
-    );
+    const usuario = await this.ds.query(`SELECT id FROM usuarios WHERE id = $1 LIMIT 1`, [id]);
     if (!usuario?.length) {
       throw new NotFoundException('Empleado no encontrado');
     }
@@ -269,9 +265,7 @@ export class EmpleadosService {
     const filename = `empleado-${id}.jpg`;
     const outputPath = join(fotosDir, filename);
 
-    const buffer =
-      archivo.buffer ||
-      (archivo.path ? fs.readFileSync(archivo.path) : null);
+    const buffer = archivo.buffer || (archivo.path ? fs.readFileSync(archivo.path) : null);
 
     if (!buffer) {
       throw new Error('No se pudo leer el archivo de imagen');
@@ -288,30 +282,56 @@ export class EmpleadosService {
 
     const publicBase = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
     const relPath = `fotos/${filename}`;
-    const url = publicBase
-      ? `${publicBase}/files/${relPath}`
-      : `/files/${relPath}`;
+    const url = publicBase ? `${publicBase}/files/${relPath}` : `/files/${relPath}`;
 
-    await this.ds.query(
-      `UPDATE usuarios SET foto_perfil_url = $2 WHERE id = $1`,
-      [id, url],
-    );
+    await this.ds.query(`UPDATE usuarios SET foto_perfil_url = $2 WHERE id = $1`, [id, url]);
 
     return { foto_perfil_url: url };
   }
 
-  private async fetchImageBuffer(url?: string | null): Promise<Buffer | null> {
+  // ✅ MODIFICADO: si el archivo remoto no existe (404), regeneramos QR/Barcode en memoria
+  private async fetchImageBuffer(
+    url?: string | null,
+    fallback?: { type: 'qr' | 'barcode'; text: string },
+  ): Promise<Buffer | null> {
     if (!url) return null;
 
     try {
       const res = await fetch(url);
-      if (!res.ok) return null;
-      const arrayBuffer = await res.arrayBuffer();
-      return Buffer.from(arrayBuffer);
+      if (res.ok) {
+        const arrayBuffer = await res.arrayBuffer();
+        return Buffer.from(arrayBuffer);
+      }
     } catch (e) {
-      console.error('No se pudo descargar imagen:', url, e);
-      return null;
+      // seguimos al fallback
     }
+
+    // ✅ Fallback: Render borró archivos de uploads, regeneramos en memoria
+    if (fallback?.type === 'qr') {
+      try {
+        return await QRCode.toBuffer(fallback.text, { margin: 1, width: 512 });
+      } catch (e) {
+        console.error('No se pudo regenerar QR:', e);
+        return null;
+      }
+    }
+
+    if (fallback?.type === 'barcode') {
+      try {
+        return await bwipToBuffer({
+          bcid: 'code128',
+          text: fallback.text,
+          scale: 3,
+          height: 12,
+          includetext: true,
+        });
+      } catch (e) {
+        console.error('No se pudo regenerar BARCODE:', e);
+        return null;
+      }
+    }
+
+    return null;
   }
 
   async generarCarnetPdf(id: string): Promise<Buffer> {
@@ -341,7 +361,13 @@ export class EmpleadosService {
 
       doc.save();
       doc.fillColor(amarillo);
-      doc.moveTo(0, 0).lineTo(cardWidth, 0).lineTo(cardWidth, cardHeight * 0.42).lineTo(0, cardHeight * 0.18).closePath().fill();
+      doc
+        .moveTo(0, 0)
+        .lineTo(cardWidth, 0)
+        .lineTo(cardWidth, cardHeight * 0.42)
+        .lineTo(0, cardHeight * 0.18)
+        .closePath()
+        .fill();
       doc.restore();
 
       const centerX = cardWidth / 2;
@@ -390,7 +416,12 @@ export class EmpleadosService {
         });
       }
 
-      const barcodeBuf = await this.fetchImageBuffer(emp.barcode_url);
+      const code = emp.code_scannable ? String(emp.code_scannable) : '';
+
+      const barcodeBuf = await this.fetchImageBuffer(
+        emp.barcode_url,
+        code ? { type: 'barcode', text: code } : undefined,
+      );
       if (barcodeBuf) {
         const barcodeWidth = cardWidth - 60;
         const barcodeY = cardHeight * 0.60;
@@ -401,7 +432,10 @@ export class EmpleadosService {
         });
       }
 
-      const qrBuf = await this.fetchImageBuffer(emp.qr_url);
+      const qrBuf = await this.fetchImageBuffer(
+        emp.qr_url,
+        code ? { type: 'qr', text: code } : undefined,
+      );
       if (qrBuf) {
         const qrSize = 110;
         const qrY = cardHeight * 0.72;
@@ -429,4 +463,13 @@ export class EmpleadosService {
       doc.end();
     });
   }
+}
+
+function bwipToBuffer(opts: any): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    (bwipjs as any).toBuffer(opts, (err: Error, png: Buffer) => {
+      if (err) reject(err);
+      else resolve(png);
+    });
+  });
 }

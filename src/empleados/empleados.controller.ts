@@ -14,6 +14,9 @@ import { EmpleadosService } from './empleados.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 
+// ✅ NUEVO: marcar rutas públicas
+import { Public } from '../common/public.decorator';
+
 @Controller('empleados')
 export class EmpleadosController {
   constructor(private readonly svc: EmpleadosService) {}
@@ -38,27 +41,27 @@ export class EmpleadosController {
     return this.svc.listarEmpleados(pag, lim, buscar);
   }
 
-  // ✅ NUEVO (OPCIÓN A): QR dinámico (SIEMPRE FUNCIONA aunque Render borre uploads)
+  // ✅ PUBLICO: QR dinámico (SIEMPRE FUNCIONA)
+  @Public()
   @Get(':id/qr.png')
   async qrPng(
     @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
     @Res() res: Response,
   ) {
     const buf = await this.svc.generarQrPngBufferPorEmpleado(id);
-
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Cache-Control', 'no-store');
     return res.send(buf);
   }
 
-  // ✅ NUEVO (OPCIÓN A): Barcode dinámico (SIEMPRE FUNCIONA aunque Render borre uploads)
+  // ✅ PUBLICO: Barcode dinámico (SIEMPRE FUNCIONA)
+  @Public()
   @Get(':id/barcode.png')
   async barcodePng(
     @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
     @Res() res: Response,
   ) {
     const buf = await this.svc.generarBarcodePngBufferPorEmpleado(id);
-
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Cache-Control', 'no-store');
     return res.send(buf);

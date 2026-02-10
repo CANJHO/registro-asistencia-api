@@ -16,7 +16,7 @@ export class JwtGuard implements CanActivate {
   ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
-    // 1️⃣ Rutas marcadas con @Public() se saltan el guard
+    // ✅ Rutas marcadas con @Public() se saltan el guard
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       ctx.getHandler(),
       ctx.getClass(),
@@ -34,7 +34,6 @@ export class JwtGuard implements CanActivate {
 
     try {
       const payload = await this.auth.verify(token);
-      // Guardamos el usuario en la request para usarlo en controladores
       req.user = payload;
       return true;
     } catch {
@@ -42,4 +41,3 @@ export class JwtGuard implements CanActivate {
     }
   }
 }
-

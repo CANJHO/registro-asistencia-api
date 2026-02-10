@@ -14,7 +14,6 @@ import { APP_GUARD } from '@nestjs/core';
 import { JwtGuard } from './common/jwt.guard';
 import { RolesGuard } from './common/roles.guard';
 
-
 import { AppService } from './app.service';
 import { DatabaseModule } from './database.module';
 import { SedesModule } from './sedes/sedes.module';
@@ -41,7 +40,7 @@ import { FeriadosModule } from './feriados/feriados.module';
     AppService,
 
     // 🔐 JwtGuard global: TODAS las rutas requieren token,
-    // excepto las marcadas con @Public()
+    // excepto las marcadas con @Public() y los estáticos /files/*
     { provide: APP_GUARD, useClass: JwtGuard },
 
     // 🎭 RolesGuard global: valida roles donde uses @Roles()
@@ -49,5 +48,3 @@ import { FeriadosModule } from './feriados/feriados.module';
   ],
 })
 export class AppModule {}
-
-

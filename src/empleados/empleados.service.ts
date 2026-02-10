@@ -1,13 +1,49 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
-import { join } from 'path';
 import * as fs from 'fs';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 
-// ✅ NUEVO: regeneración en memoria cuando Render borra uploads
+// ✅ QR/Barcode en memoria
 import * as QRCode from 'qrcode';
 const bwipjs = require('bwip-js');
+
+// ✅ Cloudinary
+import { v2 as cloudinary } from 'cloudinary';
+
+function ensureCloudinaryConfigured() {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  const apiKey = process.env.CLOUDINARY_API_KEY;
+  const apiSecret = process.env.CLOUDINARY_API_SECRET;
+
+  if (!cloudName || !apiKey || !apiSecret) {
+    throw new Error(
+      'Cloudinary no está configurado. Falta CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET en variables de entorno.',
+    );
+  }
+
+  cloudinary.config({
+    cloud_name: cloudName,
+    api_key: apiKey,
+    api_secret: apiSecret,
+  });
+}
+
+function cloudinaryUploadBuffer(
+  buffer: Buffer,
+  options: Record<string, any>,
+): Promise<{ secure_url: string; public_id: string }> {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(options, (error, result) => {
+      if (error) return reject(error);
+      if (!result?.secure_url || !result?.public_id) {
+        return reject(new Error('Cloudinary upload failed'));
+      }
+      resolve({ secure_url: result.secure_url, public_id: result.public_id });
+    });
+    stream.end(buffer);
+  });
+}
 
 @Injectable()
 export class EmpleadosService {
@@ -96,7 +132,7 @@ export class EmpleadosService {
           u.telefono_celular,
           u.email_personal,
           u.email_institucional,
-          u.fecha_nacimiento, -- ✅ NUEVO
+          u.fecha_nacimiento,
           u.code_scannable,
           u.activo,
           u.foto_perfil_url,
@@ -143,7 +179,7 @@ export class EmpleadosService {
           u.telefono_celular,
           u.email_personal,
           u.email_institucional,
-          u.fecha_nacimiento, -- ✅ NUEVO
+          u.fecha_nacimiento,
           u.code_scannable,
           u.activo,
           u.foto_perfil_url,
@@ -211,10 +247,7 @@ export class EmpleadosService {
       [id],
     );
 
-    if (!rows?.length) {
-      throw new NotFoundException('Empleado no encontrado');
-    }
-
+    if (!rows?.length) throw new NotFoundException('Empleado no encontrado');
     return rows[0];
   }
 
@@ -240,61 +273,52 @@ export class EmpleadosService {
        LIMIT 1`,
       [code],
     );
-    if (!rows?.length) {
-      throw new NotFoundException('Código no encontrado o inactivo');
-    }
+    if (!rows?.length) throw new NotFoundException('Código no encontrado o inactivo');
     return rows[0];
   }
 
   // ============================
-  // FOTO DE PERFIL (Sharp)
+  // FOTO DE PERFIL (Cloudinary)
   // ============================
   async actualizarFotoPerfil(id: string, archivo: Express.Multer.File) {
     const usuario = await this.ds.query(
       `SELECT id FROM usuarios WHERE id = $1 LIMIT 1`,
       [id],
     );
-    if (!usuario?.length) {
-      throw new NotFoundException('Empleado no encontrado');
-    }
-
-    const uploadRoot = process.env.UPLOAD_DIR || 'uploads';
-    const fotosDir = join(process.cwd(), uploadRoot, 'fotos');
-
-    if (!fs.existsSync(fotosDir)) {
-      fs.mkdirSync(fotosDir, { recursive: true });
-    }
-
-    const filename = `empleado-${id}.jpg`;
-    const outputPath = join(fotosDir, filename);
+    if (!usuario?.length) throw new NotFoundException('Empleado no encontrado');
 
     const buffer =
       archivo.buffer ||
       (archivo.path ? fs.readFileSync(archivo.path) : null);
 
-    if (!buffer) {
-      throw new Error('No se pudo leer el archivo de imagen');
-    }
+    if (!buffer) throw new Error('No se pudo leer el archivo de imagen');
 
-    await sharp(buffer)
+    // Procesar con Sharp (igual que antes)
+    const processed = await sharp(buffer)
       .rotate()
-      .resize(450, 600, {
-        fit: 'cover',
-        position: 'centre',
-      })
+      .resize(450, 600, { fit: 'cover', position: 'centre' })
       .jpeg({ quality: 80 })
-      .toFile(outputPath);
+      .toBuffer();
 
-    const publicBase = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
-    const relPath = `fotos/${filename}`;
-    const url = publicBase ? `${publicBase}/files/${relPath}` : `/files/${relPath}`;
+    // Subir a Cloudinary
+    ensureCloudinaryConfigured();
 
+    const folder = process.env.CLOUDINARY_FOLDER || 'registro-asistencia/fotos';
+    const publicId = `empleado-${id}`; // reemplaza la misma imagen
+    const { secure_url } = await cloudinaryUploadBuffer(processed, {
+      folder,
+      public_id: publicId,
+      overwrite: true,
+      resource_type: 'image',
+    });
+
+    // Guardar URL Cloudinary en BD
     await this.ds.query(
       `UPDATE usuarios SET foto_perfil_url = $2 WHERE id = $1`,
-      [id, url],
+      [id, secure_url],
     );
 
-    return { foto_perfil_url: url };
+    return { foto_perfil_url: secure_url };
   }
 
   // ✅ MODIFICADO: si el archivo remoto no existe (404), regeneramos QR/Barcode en memoria
@@ -310,11 +334,11 @@ export class EmpleadosService {
         const arrayBuffer = await res.arrayBuffer();
         return Buffer.from(arrayBuffer);
       }
-    } catch (e) {
+    } catch {
       // seguimos al fallback
     }
 
-    // ✅ Fallback: Render borró archivos de uploads, regeneramos en memoria
+    // Fallback: regenerar en memoria
     if (fallback?.type === 'qr') {
       try {
         return await QRCode.toBuffer(fallback.text, { margin: 1, width: 512 });
@@ -342,7 +366,7 @@ export class EmpleadosService {
     return null;
   }
 
-  // ✅ NUEVO (OPCIÓN A): generar QR PNG en memoria (endpoint dinámico)
+  // ✅ OPCIÓN A: PNG dinámico para endpoint público
   async generarQrPngBufferPorEmpleado(id: string): Promise<Buffer> {
     const emp = await this.obtenerFichaEmpleado(id);
     const code = emp.code_scannable ? String(emp.code_scannable) : '';
@@ -351,7 +375,7 @@ export class EmpleadosService {
     return QRCode.toBuffer(code, { margin: 1, width: 512 });
   }
 
-  // ✅ NUEVO (OPCIÓN A): generar Barcode PNG en memoria (endpoint dinámico)
+  // ✅ OPCIÓN A: PNG dinámico para endpoint público
   async generarBarcodePngBufferPorEmpleado(id: string): Promise<Buffer> {
     const emp = await this.obtenerFichaEmpleado(id);
     const code = emp.code_scannable ? String(emp.code_scannable) : '';
@@ -412,6 +436,7 @@ export class EmpleadosService {
       doc.circle(centerX, centerY, radioFoto).stroke();
       doc.restore();
 
+      // Foto (ahora idealmente Cloudinary)
       const fotoBuf = await this.fetchImageBuffer(emp.foto_perfil_url);
       if (fotoBuf) {
         doc.save();

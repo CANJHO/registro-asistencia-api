@@ -38,6 +38,32 @@ export class EmpleadosController {
     return this.svc.listarEmpleados(pag, lim, buscar);
   }
 
+  // ✅ NUEVO (OPCIÓN A): QR dinámico (SIEMPRE FUNCIONA aunque Render borre uploads)
+  @Get(':id/qr.png')
+  async qrPng(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Res() res: Response,
+  ) {
+    const buf = await this.svc.generarQrPngBufferPorEmpleado(id);
+
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.send(buf);
+  }
+
+  // ✅ NUEVO (OPCIÓN A): Barcode dinámico (SIEMPRE FUNCIONA aunque Render borre uploads)
+  @Get(':id/barcode.png')
+  async barcodePng(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Res() res: Response,
+  ) {
+    const buf = await this.svc.generarBarcodePngBufferPorEmpleado(id);
+
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.send(buf);
+  }
+
   // ====== Carnet PDF del empleado ======
   @Get(':id/carnet-pdf')
   async carnetPdf(

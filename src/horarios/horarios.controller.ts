@@ -62,9 +62,9 @@ export class HorariosController {
   // ✅ LISTAR EXCEPCIONES (lo que necesitas para el panel derecho)
   // GET /horarios/:id/excepciones
   // opcional: /horarios/:id/excepciones?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
-  @Get(':id/excepciones')
+  @Get('excepciones/:usuarioId')
   listarExcepciones(
-    @Param('id') usuarioId: string,
+    @Param('usuarioId') usuarioId: string,
     @Query('desde') desde?: string,
     @Query('hasta') hasta?: string,
   ) {

@@ -1,109 +1,83 @@
-import { Body, Controller, Get, Param, Post, Put, Query, Delete } from '@nestjs/common';
-import { Roles } from '../common/roles.decorator';
+import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
 import { HorariosService } from './horarios.service';
 
 @Controller('horarios')
 export class HorariosController {
-  constructor(private svc: HorariosService) {}
+  constructor(private readonly horariosService: HorariosService) {}
 
-  // ───────────────────────────────────────────────
-  // Horario del día (incluye excepción del día)
-  // ───────────────────────────────────────────────
-  @Get('dia/:usuarioId')
-  @Roles('RRHH', 'Gerencia', 'Empleado')
-  getDelDia(
-    @Param('usuarioId') usuarioId: string,
+  // ✅ Semana vigente para una fecha (grid semanal)
+  // GET /horarios/:id/vigente?fecha=YYYY-MM-DD
+  @Get(':id/vigente')
+  getVigentes(
+    @Param('id') usuarioId: string,
     @Query('fecha') fecha?: string,
   ) {
-    return this.svc.getHorarioDelDia(usuarioId, fecha);
+    return this.horariosService.getVigentes(usuarioId, fecha);
   }
 
-  // ───────────────────────────────────────────────
-  // Horarios vigentes en una fecha
-  // ───────────────────────────────────────────────
-  @Get('vigente/:usuarioId')
-  @Roles('RRHH', 'Gerencia')
-  vigente(
-    @Param('usuarioId') usuarioId: string,
+  // ✅ Historial de semanas
+  // GET /horarios/:id/historial
+  @Get(':id/historial')
+  historial(@Param('id') usuarioId: string) {
+    return this.horariosService.historial(usuarioId);
+  }
+
+  // ✅ Guardar semana completa (7 días)
+  // POST /horarios/:id/semana
+  @Post(':id/semana')
+  setSemana(
+    @Param('id') usuarioId: string,
+    @Body() dto: any,
+  ) {
+    return this.horariosService.setSemana(usuarioId, dto);
+  }
+
+  // ✅ Horario del día (incluye excepción del día)
+  // GET /horarios/:id/dia?fecha=YYYY-MM-DD
+  @Get(':id/dia')
+  getDia(
+    @Param('id') usuarioId: string,
     @Query('fecha') fecha?: string,
   ) {
-    return this.svc.getVigentes(usuarioId, fecha);
+    return this.horariosService.getHorarioDelDia(usuarioId, fecha);
   }
 
-  // ───────────────────────────────────────────────
-  // Historial completo
-  // ───────────────────────────────────────────────
-  @Get('historial/:usuarioId')
-  @Roles('RRHH', 'Gerencia')
-  historial(@Param('usuarioId') usuarioId: string) {
-    return this.svc.historial(usuarioId);
-  }
-
-  // ───────────────────────────────────────────────
-  // Nueva semana
-  // ───────────────────────────────────────────────
-  @Post('semana/:usuarioId')
-  @Roles('RRHH')
-  setSemana(@Param('usuarioId') usuarioId: string, @Body() dto: any) {
-    return this.svc.setSemana(usuarioId, dto);
-  }
-
-  // ───────────────────────────────────────────────
-  // Cerrar vigencia
-  // ───────────────────────────────────────────────
-  @Put('cerrar/:usuarioId')
-  @Roles('RRHH')
-  cerrar(
-    @Param('usuarioId') usuarioId: string,
-    @Body() dto: { fecha_fin: string },
+  // ✅ Crear excepción
+  // POST /horarios/:id/excepciones
+  @Post(':id/excepciones')
+  addExcepcion(
+    @Param('id') usuarioId: string,
+    @Body() dto: any,
   ) {
-    return this.svc.cerrarVigencia(usuarioId, dto.fecha_fin);
+    return this.horariosService.addExcepcion(usuarioId, dto);
   }
 
-  // ───────────────────────────────────────────────
-  // Agregar excepción
-  // ───────────────────────────────────────────────
-  @Post('excepcion/:usuarioId')
-  @Roles('RRHH')
-  addExcepcion(@Param('usuarioId') usuarioId: string, @Body() dto: any) {
-    return this.svc.addExcepcion(usuarioId, dto);
+  // ✅ Eliminar excepción por ID
+  // DELETE /horarios/excepciones/:excepcionId
+  @Delete('excepciones/:excepcionId')
+  eliminarExcepcion(@Param('excepcionId') id: string) {
+    return this.horariosService.eliminarExcepcion(id);
   }
 
-  // ───────────────────────────────────────────────
-  // Eliminar excepción
-  // ───────────────────────────────────────────────
-  @Delete('excepcion/:id')
-  @Roles('RRHH')
-  eliminarExcepcion(@Param('id') id: string) {
-    return this.svc.eliminarExcepcion(id);
-  }
-
-  // ==========================================================
-  // ✅ NUEVO: Obtener excepción por fecha (para el panel derecho)
-  // GET /horarios/excepcion/:usuarioId?fecha=YYYY-MM-DD
-  // ==========================================================
-  @Get('excepcion/:usuarioId')
-  @Roles('RRHH', 'Gerencia')
-  getExcepcionPorFecha(
-    @Param('usuarioId') usuarioId: string,
-    @Query('fecha') fecha?: string,
-  ) {
-    // si no manda fecha, el service usa la fecha actual
-    return this.svc.getExcepcionPorFecha(usuarioId, fecha || '');
-  }
-
-  // ==========================================================
-  // ✅ NUEVO: Listar excepciones (útil para historial/listado RRHH)
-  // GET /horarios/excepciones/:usuarioId?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
-  // si no envías rango => devuelve últimas 200
-  // ==========================================================
-  @Get('excepciones/:usuarioId')
-  @Roles('RRHH', 'Gerencia')
+  // ✅ LISTAR EXCEPCIONES (lo que necesitas para el panel derecho)
+  // GET /horarios/:id/excepciones
+  // opcional: /horarios/:id/excepciones?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
+  @Get(':id/excepciones')
   listarExcepciones(
-    @Param('usuarioId') usuarioId: string,
+    @Param('id') usuarioId: string,
     @Query('desde') desde?: string,
     @Query('hasta') hasta?: string,
   ) {
-    return this.svc.listarExcepciones(usuarioId, desde, hasta);
+    return this.horariosService.listarExcepciones(usuarioId, desde, hasta);
+  }
+
+  // (Opcional) obtener excepción exacta por fecha (si algún día lo necesitas)
+  // GET /horarios/:id/excepcion?fecha=YYYY-MM-DD
+  @Get(':id/excepcion')
+  getExcepcionPorFecha(
+    @Param('id') usuarioId: string,
+    @Query('fecha') fecha: string,
+  ) {
+    return this.horariosService.getExcepcionPorFecha(usuarioId, fecha);
   }
 }

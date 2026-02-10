@@ -250,7 +250,10 @@ export class EmpleadosService {
   // FOTO DE PERFIL (Sharp)
   // ============================
   async actualizarFotoPerfil(id: string, archivo: Express.Multer.File) {
-    const usuario = await this.ds.query(`SELECT id FROM usuarios WHERE id = $1 LIMIT 1`, [id]);
+    const usuario = await this.ds.query(
+      `SELECT id FROM usuarios WHERE id = $1 LIMIT 1`,
+      [id],
+    );
     if (!usuario?.length) {
       throw new NotFoundException('Empleado no encontrado');
     }
@@ -265,7 +268,9 @@ export class EmpleadosService {
     const filename = `empleado-${id}.jpg`;
     const outputPath = join(fotosDir, filename);
 
-    const buffer = archivo.buffer || (archivo.path ? fs.readFileSync(archivo.path) : null);
+    const buffer =
+      archivo.buffer ||
+      (archivo.path ? fs.readFileSync(archivo.path) : null);
 
     if (!buffer) {
       throw new Error('No se pudo leer el archivo de imagen');
@@ -284,7 +289,10 @@ export class EmpleadosService {
     const relPath = `fotos/${filename}`;
     const url = publicBase ? `${publicBase}/files/${relPath}` : `/files/${relPath}`;
 
-    await this.ds.query(`UPDATE usuarios SET foto_perfil_url = $2 WHERE id = $1`, [id, url]);
+    await this.ds.query(
+      `UPDATE usuarios SET foto_perfil_url = $2 WHERE id = $1`,
+      [id, url],
+    );
 
     return { foto_perfil_url: url };
   }
@@ -332,6 +340,30 @@ export class EmpleadosService {
     }
 
     return null;
+  }
+
+  // ✅ NUEVO (OPCIÓN A): generar QR PNG en memoria (endpoint dinámico)
+  async generarQrPngBufferPorEmpleado(id: string): Promise<Buffer> {
+    const emp = await this.obtenerFichaEmpleado(id);
+    const code = emp.code_scannable ? String(emp.code_scannable) : '';
+    if (!code) throw new NotFoundException('Empleado sin code_scannable');
+
+    return QRCode.toBuffer(code, { margin: 1, width: 512 });
+  }
+
+  // ✅ NUEVO (OPCIÓN A): generar Barcode PNG en memoria (endpoint dinámico)
+  async generarBarcodePngBufferPorEmpleado(id: string): Promise<Buffer> {
+    const emp = await this.obtenerFichaEmpleado(id);
+    const code = emp.code_scannable ? String(emp.code_scannable) : '';
+    if (!code) throw new NotFoundException('Empleado sin code_scannable');
+
+    return bwipToBuffer({
+      bcid: 'code128',
+      text: code,
+      scale: 3,
+      height: 12,
+      includetext: true,
+    });
   }
 
   async generarCarnetPdf(id: string): Promise<Buffer> {
@@ -384,10 +416,15 @@ export class EmpleadosService {
       if (fotoBuf) {
         doc.save();
         doc.circle(centerX, centerY, radioFoto - 6).clip();
-        doc.image(fotoBuf, centerX - (radioFoto - 6), centerY - (radioFoto - 6), {
-          width: (radioFoto - 6) * 2,
-          height: (radioFoto - 6) * 2,
-        });
+        doc.image(
+          fotoBuf,
+          centerX - (radioFoto - 6),
+          centerY - (radioFoto - 6),
+          {
+            width: (radioFoto - 6) * 2,
+            height: (radioFoto - 6) * 2,
+          },
+        );
         doc.restore();
       }
 

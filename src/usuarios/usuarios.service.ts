@@ -39,6 +39,7 @@ export class UsuariosService {
          LEFT JOIN roles  r ON r.id = u.rol_id
          LEFT JOIN sedes  s ON s.id = u.sede_id
          LEFT JOIN areas  a ON a.id = u.area_id
+         WHERE u.numero_documento <> '44823948'
         ORDER BY u.created_at DESC`,
       );
     }

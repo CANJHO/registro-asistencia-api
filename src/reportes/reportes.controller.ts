@@ -50,7 +50,7 @@ export class ReportesController {
   private readonly ADMIN_DNI_EXCLUDE = '44823948';
 
   // ✅ Pega aquí tu URL de Cloudinary (formato https://res.cloudinary.com/.../logo.png)
-  private readonly LOGO_URL = 'PEGA_AQUI_TU_URL_CLOUDINARY';
+  private readonly LOGO_URL = 'https://res.cloudinary.com/dl5skrfzw/image/upload/v1770768127/logo_negro_lwibom.png';
 
   // ==========================
   // Helpers fechas / filtros

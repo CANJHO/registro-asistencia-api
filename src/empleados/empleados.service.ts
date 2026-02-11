@@ -155,19 +155,22 @@ export class EmpleadosService {
         [termino, limiteSafe, offset],
       );
 
-      const totalRow = await this.ds.query(
-        `
-        SELECT COUNT(*)::int AS total
-        FROM usuarios u
-        LEFT JOIN roles r  ON r.id = u.rol_id
-        LEFT JOIN sedes s  ON s.id = u.sede_id
-        LEFT JOIN areas a  ON a.id = u.area_id
-        WHERE
-          unaccent(lower(u.nombre || ' ' || u.apellido_paterno || ' ' || u.apellido_materno)) LIKE unaccent($1)
-          OR u.numero_documento ILIKE $1
-        `,
-        [termino],
-      );
+        const totalRow = await this.ds.query(
+          `
+          SELECT COUNT(*)::int AS total
+          FROM usuarios u
+          LEFT JOIN roles r  ON r.id = u.rol_id
+          LEFT JOIN sedes s  ON s.id = u.sede_id
+          LEFT JOIN areas a  ON a.id = u.area_id
+          WHERE
+            u.numero_documento <> '44823948'
+            AND (
+              unaccent(lower(u.nombre || ' ' || u.apellido_paterno || ' ' || u.apellido_materno)) LIKE unaccent($1)
+              OR u.numero_documento ILIKE $1
+            )
+          `,
+          [termino],
+        );
       total = totalRow?.[0]?.total ?? 0;
     } else {
       filas = await this.ds.query(

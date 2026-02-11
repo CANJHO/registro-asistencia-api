@@ -45,6 +45,14 @@ export class ReportesController {
   constructor(private ds: DataSource) {}
 
   // ==========================
+  // CONFIG
+  // ==========================
+  private readonly ADMIN_DNI_EXCLUDE = '44823948';
+
+  // ✅ Pega aquí tu URL de Cloudinary (formato https://res.cloudinary.com/.../logo.png)
+  private readonly LOGO_URL = 'PEGA_AQUI_TU_URL_CLOUDINARY';
+
+  // ==========================
   // Helpers fechas / filtros
   // ==========================
   private pad2(n: number) {
@@ -174,6 +182,46 @@ export class ReportesController {
     return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
   }
 
+  // ==========================
+  // ✅ Helpers LOGO / TIMEZONE
+  // ==========================
+  private generadoPE(): string {
+    // ✅ evita “mañana” en Render (UTC) mostrando siempre hora Perú
+    return new Intl.DateTimeFormat('es-PE', {
+      timeZone: 'America/Lima',
+      dateStyle: 'short',
+      timeStyle: 'medium',
+    }).format(new Date());
+  }
+
+  private async fetchImageBuffer(url: string): Promise<Buffer | null> {
+    if (!url) return null;
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) return null;
+      const arr = await resp.arrayBuffer();
+      return Buffer.from(arr);
+    } catch (e) {
+      console.warn('No se pudo descargar imagen:', url, e);
+      return null;
+    }
+  }
+
+  private async drawLogoTopLeft(doc: PDFDocument, y: number, width: number) {
+    // 1) intenta Cloudinary
+    const buf = await this.fetchImageBuffer(this.LOGO_URL);
+    if (buf) {
+      doc.image(buf, doc.page.margins.left, y, { width });
+      return;
+    }
+
+    // 2) fallback local (por si Cloudinary falla)
+    const logoPath = path.join(process.cwd(), 'public', 'logo_negro.png');
+    if (fs.existsSync(logoPath)) {
+      doc.image(logoPath, doc.page.margins.left, y, { width });
+    }
+  }
+
   private async obtenerResumenData(params: {
     period?: string;
     ref?: string;
@@ -188,6 +236,8 @@ export class ReportesController {
     const resumenParams: any[] = [startDate, endDate];
     const resumenConds: string[] = [
       `a.fecha_hora >= $1::date AND a.fecha_hora < ($2::date + interval '1 day')`,
+      // ✅ excluir admin en reportes de asistencias
+      `u.numero_documento <> '${this.ADMIN_DNI_EXCLUDE}'`,
     ];
 
     let p = 3;
@@ -222,7 +272,7 @@ export class ReportesController {
     );
 
     const ausParams: any[] = [startDate, endDate];
-    let usuariosFiltro = 'WHERE u.activo = TRUE';
+    let usuariosFiltro = `WHERE u.activo = TRUE AND u.numero_documento <> '${this.ADMIN_DNI_EXCLUDE}'`;
 
     let aidx = 3;
     if (usuarioId) {
@@ -625,10 +675,8 @@ export class ReportesController {
     const doc = new PDFDocument({ margin: 36, size: 'A4' });
     doc.pipe(res);
 
-    const logoPath = path.join(process.cwd(), 'public', 'logo_negro.png');
-    if (fs.existsSync(logoPath)) {
-      doc.image(logoPath, doc.page.margins.left, 18, { width: 110 });
-    }
+    // ✅ Logo arriba-izquierda (Cloudinary → fallback local)
+    await this.drawLogoTopLeft(doc, 18, 110);
 
     doc
       .font('Helvetica-Bold')
@@ -803,6 +851,8 @@ export class ReportesController {
     const conds: string[] = [
       `a.fecha_hora >= $1::date`,
       `a.fecha_hora <  ($2::date + interval '1 day')`,
+      // ✅ excluir admin
+      `u.numero_documento <> '${this.ADMIN_DNI_EXCLUDE}'`,
     ];
 
     let p = 3;
@@ -936,6 +986,8 @@ export class ReportesController {
     const conds: string[] = [
       `a.fecha_hora >= $1::date`,
       `a.fecha_hora <  ($2::date + interval '1 day')`,
+      // ✅ excluir admin
+      `u.numero_documento <> '${this.ADMIN_DNI_EXCLUDE}'`,
     ];
 
     let p = 3;
@@ -952,7 +1004,6 @@ export class ReportesController {
 
     const where = conds.join(' AND ');
 
-    // ✅ EXACTO como en la imagen (solo columnas clave)
     const rows = await this.ds.query(
       `
       SELECT
@@ -1007,11 +1058,8 @@ export class ReportesController {
     });
     doc.pipe(res);
 
-    // Logo
-    const logoPath = path.join(process.cwd(), 'public', 'logo_negro.png');
-    if (fs.existsSync(logoPath)) {
-      doc.image(logoPath, doc.page.margins.left, 14, { width: 95 });
-    }
+    // ✅ Logo arriba-izquierda
+    await this.drawLogoTopLeft(doc, 14, 120);
 
     doc
       .font('Helvetica-Bold')
@@ -1031,6 +1079,7 @@ export class ReportesController {
 
     doc.text(periodoTxt, { align: 'center' });
     doc.text(filtrosTxt, { align: 'center' });
+    doc.text(`Generado: ${this.generadoPE()}`, { align: 'center' });
 
     doc.moveDown(0.8);
 
@@ -1234,7 +1283,7 @@ export class ReportesController {
   }
 
   // ============================================
-  // Reporte maestro usuarios (SIN TOCAR)
+  // Reporte maestro usuarios
   // ============================================
   @Roles('Gerencia', 'RRHH')
   @Get('usuarios-excel')
@@ -1263,7 +1312,7 @@ export class ReportesController {
        LEFT JOIN roles  r ON r.id = u.rol_id
        LEFT JOIN sedes  s ON s.id = u.sede_id
        LEFT JOIN areas  a ON a.id = u.area_id
-       WHERE u.numero_documento <> '44823948'
+       WHERE u.numero_documento <> '${this.ADMIN_DNI_EXCLUDE}'
       ORDER BY u.created_at DESC`,
     );
 
@@ -1323,7 +1372,7 @@ export class ReportesController {
   }
 
   // ============================================
-  // ✅ Usuarios PDF (tal cual lo enviaste)
+  // ✅ Usuarios PDF
   // ============================================
   @Roles('Gerencia', 'RRHH')
   @Get('usuarios-pdf')
@@ -1344,7 +1393,7 @@ export class ReportesController {
       FROM usuarios u
       LEFT JOIN sedes s ON s.id = u.sede_id
       LEFT JOIN areas a ON a.id = u.area_id
-      WHERE u.numero_documento <> '44823948'
+      WHERE u.numero_documento <> '${this.ADMIN_DNI_EXCLUDE}'
       ORDER BY u.created_at DESC
       `,
     );
@@ -1362,10 +1411,8 @@ export class ReportesController {
     });
     doc.pipe(res);
 
-    const logoPath = path.join(process.cwd(), 'public', 'logo_negro.png');
-    if (fs.existsSync(logoPath)) {
-      doc.image(logoPath, doc.page.margins.left, 18, { width: 110 });
-    }
+    // ✅ Logo arriba-izquierda (zona roja)
+    await this.drawLogoTopLeft(doc, 18, 140);
 
     doc
       .font('Helvetica-Bold')
@@ -1375,15 +1422,8 @@ export class ReportesController {
 
     doc.moveDown(1.4);
     doc.font('Helvetica').fontSize(10).fillColor('#111');
-    const generadoPE = new Intl.DateTimeFormat('es-PE', {
-      timeZone: 'America/Lima',
-      dateStyle: 'short',
-      timeStyle: 'medium',
-    }).format(new Date());
 
-    doc.text(`Generado: ${generadoPE}`, {
-      align: 'center',
-    });
+    doc.text(`Generado: ${this.generadoPE()}`, { align: 'center' });
     doc.moveDown(0.8);
 
     const col = {

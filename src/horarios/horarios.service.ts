@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 @Injectable()
@@ -7,8 +7,6 @@ export class HorariosService {
 
   /**
    * ✅ NORMALIZA FECHA COMO DATE (YYYY-MM-DD) SIN UTC
-   * - Si viene "YYYY-MM-DD" lo usa tal cual.
-   * - Si no viene, usa la fecha local del servidor (no UTC).
    */
   private dateKey(fecha?: string) {
     if (fecha && /^\d{4}-\d{2}-\d{2}$/.test(fecha)) return fecha;
@@ -21,24 +19,20 @@ export class HorariosService {
   }
 
   /**
-   * ✅ Para calcular día de semana sin “caer” en borde UTC:
-   * creamos un Date al medio día local (12:00) usando la fechaKey.
+   * ✅ Para calcular día de semana sin “borde UTC”
    */
   private dateForWeekday(fechaKey: string) {
-    // 12:00 evita que un timezone te haga caer al día anterior
     return new Date(`${fechaKey}T12:00:00`);
   }
 
   // ───────────────────────────────────────────────
-  // 1. OBTENER HORARIO DEL DÍA (Para tardanzas)
+  // 1. OBTENER HORARIO DEL DÍA (incluye excepción si existe)
   // ───────────────────────────────────────────────
   async getHorarioDelDia(usuarioId: string, fecha?: string) {
     const fechaKey = this.dateKey(fecha);
     const f = this.dateForWeekday(fechaKey);
-
     const diaSemana = f.getDay() === 0 ? 7 : f.getDay(); // Lunes=1, Domingo=7
 
-    // EXCEPCIÓN DEL DÍA (DATE exacto)
     const exc = await this.ds.query(
       `SELECT *
          FROM usuario_excepciones
@@ -50,7 +44,6 @@ export class HorariosService {
 
     const excepcion = exc[0] || null;
 
-    // HORARIO VIGENTE (por fechaKey)
     const rows = await this.ds.query(
       `SELECT *
          FROM usuario_horarios
@@ -116,16 +109,8 @@ export class HorariosService {
 
     let diasLaborables = 0;
 
-    // Validación defensiva en backend
     for (const it of items) {
-      const {
-        dia,
-        hora_inicio,
-        hora_fin,
-        hora_inicio_2,
-        hora_fin_2,
-        es_descanso,
-      } = it;
+      const { dia, hora_inicio, hora_fin, hora_inicio_2, hora_fin_2, es_descanso } = it;
 
       if (dia == null) {
         throw new BadRequestException('Cada item debe indicar el día (1..7).');
@@ -139,21 +124,18 @@ export class HorariosService {
         const t2i = hora_inicio_2;
         const t2f = hora_fin_2;
 
-        // Turno 1: si se usa, debe estar completo
         if ((t1i && !t1f) || (!t1i && t1f)) {
           throw new BadRequestException(
             `En el día ${dia}, si defines el Turno 1 debes indicar hora de inicio y fin.`,
           );
         }
 
-        // Turno 2: si se usa, debe estar completo
         if ((t2i && !t2f) || (!t2i && t2f)) {
           throw new BadRequestException(
             `En el día ${dia}, si defines el Turno 2 debes indicar hora de inicio y fin.`,
           );
         }
 
-        // Orden lógico de turnos usados
         if (t1i && t1f && t1i >= t1f) {
           throw new BadRequestException(
             `En el día ${dia}, la hora de inicio del Turno 1 debe ser menor que la hora de fin.`,
@@ -165,7 +147,6 @@ export class HorariosService {
           );
         }
 
-        // Al menos un tramo en días laborables
         if (!t1i && !t1f && !t2i && !t2f) {
           throw new BadRequestException(
             `En el día ${dia}, configura al menos un turno o márcalo como descanso.`,
@@ -174,14 +155,12 @@ export class HorariosService {
       }
     }
 
-    // No permitir semanas 100% descanso
     if (diasLaborables === 0) {
       throw new BadRequestException(
         'El horario no puede ser solo descansos. Configura al menos un día laborable.',
       );
     }
 
-    // Cerrar vigencias anteriores (la que esté abierta)
     await this.ds.query(
       `UPDATE usuario_horarios
           SET fecha_fin = $2::date
@@ -189,7 +168,6 @@ export class HorariosService {
       [usuarioId, fi],
     );
 
-    // Insertar la nueva semana
     for (const it of items) {
       const {
         dia,
@@ -204,9 +182,9 @@ export class HorariosService {
       await this.ds.query(
         `INSERT INTO usuario_horarios
           (usuario_id, dia_semana, hora_inicio, hora_fin,
-          hora_inicio_2, hora_fin_2,
-          es_descanso, tolerancia_min, fecha_inicio)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::date)`,
+           hora_inicio_2, hora_fin_2,
+           es_descanso, tolerancia_min, fecha_inicio)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::date)`,
         [
           usuarioId,
           dia,
@@ -241,7 +219,7 @@ export class HorariosService {
   }
 
   // ───────────────────────────────────────────────
-  // 6. EXCEPCIONES (ADD / DELETE)
+  // 6. EXCEPCIONES (ADD / UPDATE / DELETE)
   // ───────────────────────────────────────────────
   async addExcepcion(usuarioId: string, e: any) {
     if (!e.fecha || !e.tipo) {
@@ -250,7 +228,6 @@ export class HorariosService {
 
     const fechaKey = this.dateKey(e.fecha);
 
-    // evitar duplicados
     const exists = await this.ds.query(
       `SELECT id
          FROM usuario_excepciones
@@ -270,10 +247,54 @@ export class HorariosService {
         usuarioId,
         fechaKey,
         e.tipo,
-        e.es_laborable,
-        e.hora_inicio || null,
-        e.hora_fin || null,
+        !!e.es_laborable,
+        e.es_laborable ? (e.hora_inicio || null) : null,
+        e.es_laborable ? (e.hora_fin || null) : null,
         e.observacion || null,
+      ],
+    );
+
+    return { ok: true };
+  }
+
+  async actualizarExcepcion(id: string, e: any) {
+    const rows = await this.ds.query(
+      `SELECT id FROM usuario_excepciones WHERE id = $1 LIMIT 1`,
+      [id],
+    );
+    if (!rows.length) throw new NotFoundException('Excepción no encontrada');
+
+    const tipo = (e?.tipo || '').trim();
+    if (!tipo) throw new BadRequestException('Tipo requerido');
+
+    const esLaborable = !!e?.es_laborable;
+    const horaInicio = esLaborable ? (e?.hora_inicio || null) : null;
+    const horaFin = esLaborable ? (e?.hora_fin || null) : null;
+
+    if (esLaborable) {
+      if ((horaInicio && !horaFin) || (!horaInicio && horaFin)) {
+        throw new BadRequestException('Horario incompleto');
+      }
+      if (horaInicio && horaFin && horaInicio >= horaFin) {
+        throw new BadRequestException('Horario inválido');
+      }
+    }
+
+    await this.ds.query(
+      `UPDATE usuario_excepciones
+          SET tipo = $2,
+              es_laborable = $3,
+              hora_inicio = $4,
+              hora_fin = $5,
+              observacion = $6
+        WHERE id = $1`,
+      [
+        id,
+        tipo,
+        esLaborable,
+        horaInicio,
+        horaFin,
+        e?.observacion?.trim() || null,
       ],
     );
 
@@ -286,84 +307,68 @@ export class HorariosService {
   }
 
   // ───────────────────────────────────────────────
-  // 7. EXCEPCIONES (GET para FRONT)
+  // 7. EXCEPCIONES (GET)
   // ───────────────────────────────────────────────
-  async getExcepcionPorFecha(usuarioId: string, fecha: string) {
-    const fechaKey = this.dateKey(fecha);
-
-    const rows = await this.ds.query(
-      `SELECT *
-         FROM usuario_excepciones
-        WHERE usuario_id = $1
-          AND fecha = $2::date
-        LIMIT 1`,
-      [usuarioId, fechaKey],
-    );
-
-    return rows[0] || null;
-  }
-
   async listarExcepciones(usuarioId: string, desde?: string, hasta?: string) {
     const d = desde ? this.dateKey(desde) : null;
     const h = hasta ? this.dateKey(hasta) : null;
 
-    // ✅ Si vienen desde/hasta -> rango
+    // rango
     if (d && h) {
       return this.ds.query(
         `SELECT
-          id,
-          usuario_id,
-          (fecha::date)::text AS fecha,
-          tipo,
-          es_laborable,
-          hora_inicio,
-          hora_fin,
-          observacion
-        FROM usuario_excepciones
-        WHERE usuario_id = $1
-          AND fecha BETWEEN $2::date AND $3::date
-        ORDER BY fecha ASC`,
+           id,
+           usuario_id,
+           to_char(fecha::date, 'YYYY-MM-DD') as fecha,
+           tipo,
+           es_laborable,
+           hora_inicio,
+           hora_fin,
+           observacion
+         FROM usuario_excepciones
+         WHERE usuario_id = $1
+           AND fecha BETWEEN $2::date AND $3::date
+         ORDER BY fecha ASC`,
         [usuarioId, d, h],
       );
     }
 
-    // ✅ Si solo viene desde -> desde en adelante (mantengo tu lógica)
+    // desde en adelante
     if (d && !h) {
       return this.ds.query(
         `SELECT
-          id,
-          usuario_id,
-          (fecha::date)::text AS fecha,
-          tipo,
-          es_laborable,
-          hora_inicio,
-          hora_fin,
-          observacion
-        FROM usuario_excepciones
-        WHERE usuario_id = $1
-          AND fecha >= $2::date
-        ORDER BY fecha ASC`,
+           id,
+           usuario_id,
+           to_char(fecha::date, 'YYYY-MM-DD') as fecha,
+           tipo,
+           es_laborable,
+           hora_inicio,
+           hora_fin,
+           observacion
+         FROM usuario_excepciones
+         WHERE usuario_id = $1
+           AND fecha >= $2::date
+         ORDER BY fecha ASC`,
         [usuarioId, d],
       );
     }
 
-    // ✅ Default: desde HOY en adelante (para que “se muestre siempre hasta que pase el día”)
-    const hoy = this.dateKey();
+    // default últimas 200
     return this.ds.query(
       `SELECT
-        id,
-        usuario_id,
-        (fecha::date)::text AS fecha,
-        tipo,
-        es_laborable,
-        hora_inicio,
-        hora_fin,
-        observacion
-      FROM usuario_excepciones
-      WHERE usuario_id = $1
-        AND fecha >= $2::date
-      ORDER BY fecha ASC`,
-      [usuarioId, hoy],
+         id,
+         usuario_id,
+         to_char(fecha::date, 'YYYY-MM-DD') as fecha,
+         tipo,
+         es_laborable,
+         hora_inicio,
+         hora_fin,
+         observacion
+       FROM usuario_excepciones
+       WHERE usuario_id = $1
+       ORDER BY fecha DESC
+       LIMIT 200`,
+      [usuarioId],
     );
   }
 }

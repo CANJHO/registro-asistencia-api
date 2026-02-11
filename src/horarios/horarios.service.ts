@@ -313,7 +313,7 @@ export class HorariosService {
         `SELECT
           id,
           usuario_id,
-          fecha::date AS fecha,
+          (fecha::date)::text AS fecha,
           tipo,
           es_laborable,
           hora_inicio,
@@ -324,16 +324,16 @@ export class HorariosService {
           AND fecha BETWEEN $2::date AND $3::date
         ORDER BY fecha ASC`,
         [usuarioId, d, h],
-      );  
+      );
     }
 
-    // ✅ Si solo viene desde -> desde en adelante
+    // ✅ Si solo viene desde -> desde en adelante (mantengo tu lógica)
     if (d && !h) {
       return this.ds.query(
         `SELECT
           id,
           usuario_id,
-          fecha::date AS fecha,
+          (fecha::date)::text AS fecha,
           tipo,
           es_laborable,
           hora_inicio,
@@ -341,20 +341,28 @@ export class HorariosService {
           observacion
         FROM usuario_excepciones
         WHERE usuario_id = $1
-        ORDER BY fecha DESC
-        LIMIT 200`,
-        [usuarioId],
+          AND fecha >= $2::date
+        ORDER BY fecha ASC`,
+        [usuarioId, d],
       );
     }
 
-    // ✅ Default: vigentes desde HOY (para que “se muestre siempre hasta que pase el día”)
+    // ✅ Default: desde HOY en adelante (para que “se muestre siempre hasta que pase el día”)
     const hoy = this.dateKey();
     return this.ds.query(
-      `SELECT *
-         FROM usuario_excepciones
-        WHERE usuario_id = $1
-          AND fecha >= $2::date
-        ORDER BY fecha ASC`,
+      `SELECT
+        id,
+        usuario_id,
+        (fecha::date)::text AS fecha,
+        tipo,
+        es_laborable,
+        hora_inicio,
+        hora_fin,
+        observacion
+      FROM usuario_excepciones
+      WHERE usuario_id = $1
+        AND fecha >= $2::date
+      ORDER BY fecha ASC`,
       [usuarioId, hoy],
     );
   }

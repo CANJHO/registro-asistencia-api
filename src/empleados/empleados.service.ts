@@ -144,9 +144,11 @@ export class EmpleadosService {
         LEFT JOIN sedes s  ON s.id = u.sede_id
         LEFT JOIN areas a  ON a.id = u.area_id
         WHERE
-          unaccent(lower(u.nombre || ' ' || u.apellido_paterno || ' ' || u.apellido_materno)) LIKE unaccent($1)
-          OR u.numero_documento ILIKE $1
-          AND u.numero_documento <>'44823948'
+          u.numero_documento <> '44823948'
+          AND (
+            unaccent(lower(u.nombre || ' ' || u.apellido_paterno || ' ' || u.apellido_materno)) LIKE unaccent($1)
+            OR u.numero_documento ILIKE $1
+          )
         ORDER BY u.apellido_paterno, u.apellido_materno, u.nombre
         LIMIT $2 OFFSET $3
         `,

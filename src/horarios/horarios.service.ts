@@ -310,24 +310,40 @@ export class HorariosService {
     // ✅ Si vienen desde/hasta -> rango
     if (d && h) {
       return this.ds.query(
-        `SELECT *
-           FROM usuario_excepciones
-          WHERE usuario_id = $1
-            AND fecha BETWEEN $2::date AND $3::date
-          ORDER BY fecha ASC`,
+        `SELECT
+          id,
+          usuario_id,
+          fecha::date AS fecha,
+          tipo,
+          es_laborable,
+          hora_inicio,
+          hora_fin,
+          observacion
+        FROM usuario_excepciones
+        WHERE usuario_id = $1
+          AND fecha BETWEEN $2::date AND $3::date
+        ORDER BY fecha ASC`,
         [usuarioId, d, h],
-      );
+      );  
     }
 
     // ✅ Si solo viene desde -> desde en adelante
     if (d && !h) {
       return this.ds.query(
-        `SELECT *
-           FROM usuario_excepciones
-          WHERE usuario_id = $1
-            AND fecha >= $2::date
-          ORDER BY fecha ASC`,
-        [usuarioId, d],
+        `SELECT
+          id,
+          usuario_id,
+          fecha::date AS fecha,
+          tipo,
+          es_laborable,
+          hora_inicio,
+          hora_fin,
+          observacion
+        FROM usuario_excepciones
+        WHERE usuario_id = $1
+        ORDER BY fecha DESC
+        LIMIT 200`,
+        [usuarioId],
       );
     }
 

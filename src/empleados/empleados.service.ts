@@ -106,119 +106,127 @@ export class EmpleadosService {
     return rows || [];
   }
 
-  // ============================
-  // LISTADO DE EMPLEADOS (PANEL)
-  // ============================
-  async listarEmpleados(pagina: number, limite: number, buscar?: string) {
-    const paginaSafe = pagina && pagina > 0 ? pagina : 1;
-    const limiteSafe = !limite || limite < 1 ? 20 : limite > 100 ? 100 : limite;
-    const offset = (paginaSafe - 1) * limiteSafe;
+      // ============================
+      // LISTADO DE EMPLEADOS (PANEL)
+      // ============================
+      async listarEmpleados(pagina: number, limite: number, buscar?: string) {
+        const paginaSafe = pagina && pagina > 0 ? pagina : 1;
+        const limiteSafe = !limite || limite < 1 ? 20 : limite > 100 ? 100 : limite;
+        const offset = (paginaSafe - 1) * limiteSafe;
 
-    let filas: any[] = [];
-    let total = 0;
+        const DNI_EXCLUIDO = '44823948';
 
-    if (buscar && buscar.trim()) {
-      const termino = `%${buscar.trim().toLowerCase()}%`;
+        let filas: any[] = [];
+        let total = 0;
 
-      filas = await this.ds.query(
-        `
-        SELECT
-          u.id,
-          u.nombre,
-          u.apellido_paterno,
-          u.apellido_materno,
-          u.tipo_documento,
-          u.numero_documento,
-          u.telefono_celular,
-          u.email_personal,
-          u.email_institucional,
-          u.fecha_nacimiento,
-          u.code_scannable,
-          u.activo,
-          u.foto_perfil_url,
-          r.nombre AS rol,
-          s.nombre AS sede,
-          a.nombre AS area
-        FROM usuarios u
-        LEFT JOIN roles r  ON r.id = u.rol_id
-        LEFT JOIN sedes s  ON s.id = u.sede_id
-        LEFT JOIN areas a  ON a.id = u.area_id
-        WHERE
-          u.numero_documento <> '44823948'
-          AND (
-            unaccent(lower(u.nombre || ' ' || u.apellido_paterno || ' ' || u.apellido_materno)) LIKE unaccent($1)
-            OR u.numero_documento ILIKE $1
-          )
-        ORDER BY u.apellido_paterno, u.apellido_materno, u.nombre
-        LIMIT $2 OFFSET $3
-        `,
-        [termino, limiteSafe, offset],
-      );
+        if (buscar && buscar.trim()) {
+          const termino = `%${buscar.trim().toLowerCase()}%`;
 
-        const totalRow = await this.ds.query(
-          `
-          SELECT COUNT(*)::int AS total
-          FROM usuarios u
-          LEFT JOIN roles r  ON r.id = u.rol_id
-          LEFT JOIN sedes s  ON s.id = u.sede_id
-          LEFT JOIN areas a  ON a.id = u.area_id
-          WHERE
-            u.numero_documento <> '44823948'
-            AND (
-              unaccent(lower(u.nombre || ' ' || u.apellido_paterno || ' ' || u.apellido_materno)) LIKE unaccent($1)
-              OR u.numero_documento ILIKE $1
-            )
-          `,
-          [termino],
-        );
-      total = totalRow?.[0]?.total ?? 0;
-    } else {
-      filas = await this.ds.query(
-        `
-        SELECT
-          u.id,
-          u.nombre,
-          u.apellido_paterno,
-          u.apellido_materno,
-          u.tipo_documento,
-          u.numero_documento,
-          u.telefono_celular,
-          u.email_personal,
-          u.email_institucional,
-          u.fecha_nacimiento,
-          u.code_scannable,
-          u.activo,
-          u.foto_perfil_url,
-          r.nombre AS rol,
-          s.nombre AS sede,
-          a.nombre AS area
-        FROM usuarios u
-        LEFT JOIN roles r  ON r.id = u.rol_id
-        LEFT JOIN sedes s  ON s.id = u.sede_id
-        LEFT JOIN areas a  ON a.id = u.area_id
-        ORDER BY u.apellido_paterno, u.apellido_materno, u.nombre
-        LIMIT $1 OFFSET $2
-        `,
-        [limiteSafe, offset],
-      );
+          filas = await this.ds.query(
+            `
+            SELECT
+              u.id,
+              u.nombre,
+              u.apellido_paterno,
+              u.apellido_materno,
+              u.tipo_documento,
+              u.numero_documento,
+              u.telefono_celular,
+              u.email_personal,
+              u.email_institucional,
+              u.fecha_nacimiento,
+              u.code_scannable,
+              u.activo,
+              u.foto_perfil_url,
+              r.nombre AS rol,
+              s.nombre AS sede,
+              a.nombre AS area
+            FROM usuarios u
+            LEFT JOIN roles r  ON r.id = u.rol_id
+            LEFT JOIN sedes s  ON s.id = u.sede_id
+            LEFT JOIN areas a  ON a.id = u.area_id
+            WHERE
+              u.numero_documento <> $4
+              AND (
+                unaccent(lower(u.nombre || ' ' || u.apellido_paterno || ' ' || u.apellido_materno)) LIKE unaccent($1)
+                OR u.numero_documento ILIKE $1
+              )
+            ORDER BY u.apellido_paterno, u.apellido_materno, u.nombre
+            LIMIT $2 OFFSET $3
+            `,
+            [termino, limiteSafe, offset, DNI_EXCLUIDO],
+          );
 
-      const totalRow = await this.ds.query(
-        `
-        SELECT COUNT(*)::int AS total
-        FROM usuarios u
-        `,
-      );
-      total = totalRow?.[0]?.total ?? 0;
-    }
+          const totalRow = await this.ds.query(
+            `
+            SELECT COUNT(*)::int AS total
+            FROM usuarios u
+            LEFT JOIN roles r  ON r.id = u.rol_id
+            LEFT JOIN sedes s  ON s.id = u.sede_id
+            LEFT JOIN areas a  ON a.id = u.area_id
+            WHERE
+              u.numero_documento <> $2
+              AND (
+                unaccent(lower(u.nombre || ' ' || u.apellido_paterno || ' ' || u.apellido_materno)) LIKE unaccent($1)
+                OR u.numero_documento ILIKE $1
+              )
+            `,
+            [termino, DNI_EXCLUIDO],
+          );
 
-    return {
-      datos: filas,
-      total,
-      pagina: paginaSafe,
-      limite: limiteSafe,
-    };
-  }
+          total = totalRow?.[0]?.total ?? 0;
+        } else {
+          // ✅ AQUÍ TE FALTABA EXCLUIR EL DNI
+          filas = await this.ds.query(
+            `
+            SELECT
+              u.id,
+              u.nombre,
+              u.apellido_paterno,
+              u.apellido_materno,
+              u.tipo_documento,
+              u.numero_documento,
+              u.telefono_celular,
+              u.email_personal,
+              u.email_institucional,
+              u.fecha_nacimiento,
+              u.code_scannable,
+              u.activo,
+              u.foto_perfil_url,
+              r.nombre AS rol,
+              s.nombre AS sede,
+              a.nombre AS area
+            FROM usuarios u
+            LEFT JOIN roles r  ON r.id = u.rol_id
+            LEFT JOIN sedes s  ON s.id = u.sede_id
+            LEFT JOIN areas a  ON a.id = u.area_id
+            WHERE u.numero_documento <> $3
+            ORDER BY u.apellido_paterno, u.apellido_materno, u.nombre
+            LIMIT $1 OFFSET $2
+            `,
+            [limiteSafe, offset, DNI_EXCLUIDO],
+          );
 
+          // ✅ Y AQUÍ TAMBIÉN TE FALTABA EXCLUIR EN EL COUNT
+          const totalRow = await this.ds.query(
+            `
+            SELECT COUNT(*)::int AS total
+            FROM usuarios u
+            WHERE u.numero_documento <> $1
+            `,
+            [DNI_EXCLUIDO],
+          );
+
+          total = totalRow?.[0]?.total ?? 0;
+        }
+
+        return {
+          datos: filas,
+          total,
+          pagina: paginaSafe,
+          limite: limiteSafe,
+        };
+      }
   // ============================
   // FICHA DEL EMPLEADO
   // ============================

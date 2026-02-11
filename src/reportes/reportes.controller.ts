@@ -681,7 +681,7 @@ export class ReportesController {
     doc
       .font('Helvetica-Bold')
       .fontSize(16)
-      .text('Reporte de Asistencias - Resumen', 0, 42, { align: 'justify' });
+      .text('Reporte de Asistencias - Resumen', 0, 42, { align: 'justify-center' });
 
     doc.moveDown(1.7);
 

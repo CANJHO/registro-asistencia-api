@@ -1263,6 +1263,7 @@ export class ReportesController {
        LEFT JOIN roles  r ON r.id = u.rol_id
        LEFT JOIN sedes  s ON s.id = u.sede_id
        LEFT JOIN areas  a ON a.id = u.area_id
+       WHERE u.numero_documento <> '44823948'
       ORDER BY u.created_at DESC`,
     );
 
@@ -1343,6 +1344,7 @@ export class ReportesController {
       FROM usuarios u
       LEFT JOIN sedes s ON s.id = u.sede_id
       LEFT JOIN areas a ON a.id = u.area_id
+      WHERE u.numero_documento <> '44823948'
       ORDER BY u.created_at DESC
       `,
     );
@@ -1373,7 +1375,13 @@ export class ReportesController {
 
     doc.moveDown(1.4);
     doc.font('Helvetica').fontSize(10).fillColor('#111');
-    doc.text(`Generado: ${new Date().toLocaleString('es-PE')}`, {
+    const generadoPE = new Intl.DateTimeFormat('es-PE', {
+      timeZone: 'America/Lima',
+      dateStyle: 'short',
+      timeStyle: 'medium',
+    }).format(new Date());
+
+    doc.text(`Generado: ${generadoPE}`, {
       align: 'center',
     });
     doc.moveDown(0.8);

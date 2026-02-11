@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 @Injectable()
@@ -307,6 +307,7 @@ export class HorariosService {
     const d = desde ? this.dateKey(desde) : null;
     const h = hasta ? this.dateKey(hasta) : null;
 
+    // ✅ Si vienen desde/hasta -> rango
     if (d && h) {
       return this.ds.query(
         `SELECT *
@@ -318,13 +319,27 @@ export class HorariosService {
       );
     }
 
+    // ✅ Si solo viene desde -> desde en adelante
+    if (d && !h) {
+      return this.ds.query(
+        `SELECT *
+           FROM usuario_excepciones
+          WHERE usuario_id = $1
+            AND fecha >= $2::date
+          ORDER BY fecha ASC`,
+        [usuarioId, d],
+      );
+    }
+
+    // ✅ Default: vigentes desde HOY (para que “se muestre siempre hasta que pase el día”)
+    const hoy = this.dateKey();
     return this.ds.query(
       `SELECT *
          FROM usuario_excepciones
         WHERE usuario_id = $1
-        ORDER BY fecha DESC
-        LIMIT 200`,
-      [usuarioId],
+          AND fecha >= $2::date
+        ORDER BY fecha ASC`,
+      [usuarioId, hoy],
     );
   }
 }

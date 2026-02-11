@@ -146,6 +146,7 @@ export class EmpleadosService {
         WHERE
           unaccent(lower(u.nombre || ' ' || u.apellido_paterno || ' ' || u.apellido_materno)) LIKE unaccent($1)
           OR u.numero_documento ILIKE $1
+          AND u.numero_documento <>'44823948'
         ORDER BY u.apellido_paterno, u.apellido_materno, u.nombre
         LIMIT $2 OFFSET $3
         `,

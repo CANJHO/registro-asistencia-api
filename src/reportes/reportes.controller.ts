@@ -50,7 +50,11 @@ export class ReportesController {
   private readonly ADMIN_DNI_EXCLUDE = '44823948';
 
   // ✅ Pega aquí tu URL de Cloudinary (formato https://res.cloudinary.com/.../logo.png)
-  private readonly LOGO_URL = 'https://res.cloudinary.com/dl5skrfzw/image/upload/v1770768127/logo_negro_lwibom.png';
+  private readonly LOGO_URL =
+    'https://res.cloudinary.com/dl5skrfzw/image/upload/v1770768127/logo_negro_lwibom.png';
+
+  // ✅ Timezone Perú para SQL
+  private readonly TZ_PE = 'America/Lima';
 
   // ==========================
   // Helpers fechas / filtros
@@ -186,7 +190,6 @@ export class ReportesController {
   // ✅ Helpers LOGO / TIMEZONE
   // ==========================
   private generadoPE(): string {
-    // ✅ evita “mañana” en Render (UTC) mostrando siempre hora Perú
     return new Intl.DateTimeFormat('es-PE', {
       timeZone: 'America/Lima',
       dateStyle: 'short',
@@ -208,14 +211,12 @@ export class ReportesController {
   }
 
   private async drawLogoTopLeft(doc: PDFDocument, y: number, width: number) {
-    // 1) intenta Cloudinary
     const buf = await this.fetchImageBuffer(this.LOGO_URL);
     if (buf) {
       doc.image(buf, doc.page.margins.left, y, { width });
       return;
     }
 
-    // 2) fallback local (por si Cloudinary falla)
     const logoPath = path.join(process.cwd(), 'public', 'logo_negro.png');
     if (fs.existsSync(logoPath)) {
       doc.image(logoPath, doc.page.margins.left, y, { width });
@@ -235,8 +236,9 @@ export class ReportesController {
 
     const resumenParams: any[] = [startDate, endDate];
     const resumenConds: string[] = [
-      `a.fecha_hora >= $1::date AND a.fecha_hora < ($2::date + interval '1 day')`,
-      // ✅ excluir admin en reportes de asistencias
+      // ✅ RANGO POR DÍA PERÚ (no UTC)
+      `a.fecha_hora >= (($1::date)::timestamp AT TIME ZONE '${this.TZ_PE}')`,
+      `a.fecha_hora <  ((($2::date + interval '1 day')::timestamp) AT TIME ZONE '${this.TZ_PE}')`,
       `u.numero_documento <> '${this.ADMIN_DNI_EXCLUDE}'`,
     ];
 
@@ -349,13 +351,13 @@ export class ReportesController {
       asis_dia AS (
         SELECT
           a.usuario_id,
-          a.fecha_hora::date AS fecha,
+          (a.fecha_hora AT TIME ZONE '${this.TZ_PE}')::date AS fecha,
           COUNT(*) AS marcas
         FROM asistencias a
         JOIN usuarios_filtrados uf ON uf.id = a.usuario_id
-       WHERE a.fecha_hora >= $1::date
-         AND a.fecha_hora < ($2::date + interval '1 day')
-       GROUP BY a.usuario_id, a.fecha_hora::date
+       WHERE a.fecha_hora >= (($1::date)::timestamp AT TIME ZONE '${this.TZ_PE}')
+         AND a.fecha_hora <  ((($2::date + interval '1 day')::timestamp) AT TIME ZONE '${this.TZ_PE}')
+       GROUP BY a.usuario_id, (a.fecha_hora AT TIME ZONE '${this.TZ_PE}')::date
       ),
       cal_final AS (
         SELECT
@@ -675,7 +677,6 @@ export class ReportesController {
     const doc = new PDFDocument({ margin: 36, size: 'A4' });
     doc.pipe(res);
 
-    // ✅ Logo arriba-izquierda (Cloudinary → fallback local)
     await this.drawLogoTopLeft(doc, 18, 110);
 
     doc
@@ -818,7 +819,7 @@ export class ReportesController {
   }
 
   // ==========================
-  // DETALLE - EXCEL (ACTUALIZADO)
+  // ✅ DETALLE - EXCEL (FIX TZ PERÚ)
   // ==========================
   @Roles('Gerencia', 'RRHH')
   @Get('detalle-excel')
@@ -849,9 +850,9 @@ export class ReportesController {
 
     const params: any[] = [desde, hasta];
     const conds: string[] = [
-      `a.fecha_hora >= $1::date`,
-      `a.fecha_hora <  ($2::date + interval '1 day')`,
-      // ✅ excluir admin
+      // ✅ RANGO POR DÍA PERÚ (no UTC)
+      `a.fecha_hora >= (($1::date)::timestamp AT TIME ZONE '${this.TZ_PE}')`,
+      `a.fecha_hora <  ((($2::date + interval '1 day')::timestamp) AT TIME ZONE '${this.TZ_PE}')`,
       `u.numero_documento <> '${this.ADMIN_DNI_EXCLUDE}'`,
     ];
 
@@ -872,8 +873,8 @@ export class ReportesController {
     const rows = await this.ds.query(
       `
       SELECT
-        a.fecha_hora::date               AS fecha,
-        TO_CHAR(a.fecha_hora, 'HH24:MI') AS hora,
+        to_char(((a.fecha_hora AT TIME ZONE '${this.TZ_PE}')::date), 'DD/MM/YYYY') AS fecha,
+        to_char((a.fecha_hora AT TIME ZONE '${this.TZ_PE}'), 'HH24:MI')          AS hora,
 
         CASE a.tipo
           WHEN 'IN'  THEN 'ENTRADA'
@@ -952,7 +953,7 @@ export class ReportesController {
   }
 
   // ==========================
-  // ✅ DETALLE - PDF (NUEVO)
+  // ✅ DETALLE - PDF (FIX TZ PERÚ)
   // ==========================
   @Roles('Gerencia', 'RRHH')
   @Get('detalle-pdf')
@@ -967,7 +968,6 @@ export class ReportesController {
       throw new BadRequestException('Debe indicar desde y hasta');
     }
 
-    // performance igual que excel
     if (!usuarioId && !sedeId) {
       const d1 = new Date(desde + 'T00:00:00');
       const d2 = new Date(hasta + 'T00:00:00');
@@ -984,9 +984,9 @@ export class ReportesController {
 
     const params: any[] = [desde, hasta];
     const conds: string[] = [
-      `a.fecha_hora >= $1::date`,
-      `a.fecha_hora <  ($2::date + interval '1 day')`,
-      // ✅ excluir admin
+      // ✅ RANGO POR DÍA PERÚ (no UTC)
+      `a.fecha_hora >= (($1::date)::timestamp AT TIME ZONE '${this.TZ_PE}')`,
+      `a.fecha_hora <  ((($2::date + interval '1 day')::timestamp) AT TIME ZONE '${this.TZ_PE}')`,
       `u.numero_documento <> '${this.ADMIN_DNI_EXCLUDE}'`,
     ];
 
@@ -1007,8 +1007,8 @@ export class ReportesController {
     const rows = await this.ds.query(
       `
       SELECT
-        a.fecha_hora::date               AS fecha,
-        TO_CHAR(a.fecha_hora, 'HH24:MI') AS hora,
+        ((a.fecha_hora AT TIME ZONE '${this.TZ_PE}')::date)            AS fecha_pe,
+        to_char((a.fecha_hora AT TIME ZONE '${this.TZ_PE}'), 'HH24:MI') AS hora,
 
         (u.nombre || ' ' ||
          COALESCE(u.apellido_paterno,'') || ' ' ||
@@ -1040,7 +1040,7 @@ export class ReportesController {
       JOIN usuarios u ON u.id = a.usuario_id
       LEFT JOIN sedes s ON s.id = u.sede_id
       WHERE ${where}
-      ORDER BY fecha, hora, empleado
+      ORDER BY fecha_pe, hora, empleado
       `,
       params,
     );
@@ -1058,7 +1058,6 @@ export class ReportesController {
     });
     doc.pipe(res);
 
-    // ✅ Logo arriba-izquierda
     await this.drawLogoTopLeft(doc, 14, 120);
 
     doc
@@ -1234,7 +1233,7 @@ export class ReportesController {
     for (const r of rows) {
       const rowH = Math.max(
         minRowH,
-        getTextHeight(fmtFechaPE(r.fecha), col.fecha) + paddingY * 2,
+        getTextHeight(fmtFechaPE(r.fecha_pe), col.fecha) + paddingY * 2,
         getTextHeight(r.hora, col.hora) + paddingY * 2,
         getTextHeight(r.empleado, col.empleado) + paddingY * 2,
         getTextHeight(r.sede, col.sede) + paddingY * 2,
@@ -1251,7 +1250,9 @@ export class ReportesController {
       }
 
       let x = startX;
-      drawCell(fmtFechaPE(r.fecha), x, col.fecha, y, rowH, { align: 'center' });
+      drawCell(fmtFechaPE(r.fecha_pe), x, col.fecha, y, rowH, {
+        align: 'center',
+      });
       x += col.fecha;
 
       drawCell(r.hora, x, col.hora, y, rowH, { align: 'center' });
@@ -1411,7 +1412,6 @@ export class ReportesController {
     });
     doc.pipe(res);
 
-    // ✅ Logo arriba-izquierda (zona roja)
     await this.drawLogoTopLeft(doc, 18, 140);
 
     doc

@@ -1,16 +1,78 @@
 import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
-import { join } from 'path';
-import * as fs from 'fs';
 import sharp from 'sharp';
 import * as QRCode from 'qrcode';
 import * as bcrypt from 'bcrypt';
+import { v2 as cloudinary } from 'cloudinary';
+import { Readable } from 'stream';
+
 const bwipjs = require('bwip-js');
 
 @Injectable()
 export class UsuariosService {
-  constructor(private ds: DataSource) {}
+  private cloudinaryReady = false;
+  private cloudFolder = 'registro-asistencia';
 
+  constructor(private ds: DataSource) {
+    // ✅ Cloudinary config desde variables
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const apiKey = process.env.CLOUDINARY_API_KEY;
+    const apiSecret = process.env.CLOUDINARY_API_SECRET;
+
+    this.cloudFolder = process.env.CLOUDINARY_FOLDER || 'registro-asistencia';
+
+    if (cloudName && apiKey && apiSecret) {
+      cloudinary.config({
+        cloud_name: cloudName,
+        api_key: apiKey,
+        api_secret: apiSecret,
+        secure: true,
+      });
+      this.cloudinaryReady = true;
+    }
+  }
+
+  // =========================
+  // Helpers Cloudinary
+  // =========================
+  private async uploadImageBufferToCloudinary(params: {
+    buffer: Buffer;
+    folder: string;
+    publicId: string; // para overwrite estable
+    format?: 'png' | 'jpg' | 'jpeg';
+  }): Promise<string> {
+    if (!this.cloudinaryReady) {
+      throw new Error(
+        'Cloudinary no está configurado. Revisa CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET.',
+      );
+    }
+
+    const { buffer, folder, publicId, format } = params;
+
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder,
+          public_id: publicId,
+          overwrite: true,
+          resource_type: 'image',
+          format: format, // opcional
+        },
+        (err, result) => {
+          if (err) return reject(err);
+          if (!result?.secure_url)
+            return reject(new Error('Cloudinary no devolvió secure_url'));
+          resolve(result.secure_url);
+        },
+      );
+
+      Readable.from(buffer).pipe(uploadStream);
+    });
+  }
+
+  // =========================
+  // CRUD
+  // =========================
   async list(q?: string) {
     if (!q) {
       return this.ds.query(
@@ -87,24 +149,26 @@ export class UsuariosService {
     return r[0];
   }
 
-async create(dto: any) {
-  const plainPassword =
-    (dto.password && String(dto.password).trim()) ||
-    dto.numero_documento ||
-    dto.dni ||
-    null;
+  async create(dto: any) {
+    const plainPassword =
+      (dto.password && String(dto.password).trim()) ||
+      dto.numero_documento ||
+      dto.dni ||
+      null;
 
-  if (!plainPassword) {
-    throw new Error('No se pudo determinar la contraseña por defecto del usuario.');
-  }
+    if (!plainPassword) {
+      throw new Error(
+        'No se pudo determinar la contraseña por defecto del usuario.',
+      );
+    }
 
-  const passwordHash = await bcrypt.hash(String(plainPassword), 10);
+    const passwordHash = await bcrypt.hash(String(plainPassword), 10);
 
-  let r: any[];
+    let r: any[];
 
-  try {
-    r = await this.ds.query(
-      `INSERT INTO usuarios (
+    try {
+      r = await this.ds.query(
+        `INSERT INTO usuarios (
           dni,
           nombre,
           apellido_paterno,
@@ -134,53 +198,49 @@ async create(dto: any) {
           $15
         )
         RETURNING id`,
-      [
-        dto.dni || dto.numero_documento,
-        dto.nombre,
-        dto.apellido_paterno || null,
-        dto.apellido_materno || null,
-        dto.fecha_nacimiento || null,
-        dto.rol_id,
-        dto.sede_id || null,
-        dto.activo,
-        passwordHash,
-        dto.tipo_documento || 'DNI',
-        dto.numero_documento,
-        dto.email_personal || null,
-        dto.email_institucional || null,
-        dto.telefono_celular || null,
-        dto.area_id || null,
-      ],
-    );
-  } catch (e: any) {
-    // Unique constraint violada (tipo_documento, numero_documento)
-    if (e?.code === '23505') {
-      throw new ConflictException('El número de documento ya está registrado.');
+        [
+          dto.dni || dto.numero_documento,
+          dto.nombre,
+          dto.apellido_paterno || null,
+          dto.apellido_materno || null,
+          dto.fecha_nacimiento || null,
+          dto.rol_id,
+          dto.sede_id || null,
+          dto.activo,
+          passwordHash,
+          dto.tipo_documento || 'DNI',
+          dto.numero_documento,
+          dto.email_personal || null,
+          dto.email_institucional || null,
+          dto.telefono_celular || null,
+          dto.area_id || null,
+        ],
+      );
+    } catch (e: any) {
+      if (e?.code === '23505') {
+        throw new ConflictException('El número de documento ya está registrado.');
+      }
+      throw e;
     }
-    throw e;
+
+    const idNuevo = r[0].id;
+
+    try {
+      await this.generarBarcode(idNuevo);
+      await this.generarQR(idNuevo);
+    } catch (e) {
+      console.error('Error generando barcode/QR al crear usuario:', e);
+    }
+
+    return this.get(idNuevo);
   }
-
-  const idNuevo = r[0].id;
-
-  try {
-    await this.generarBarcode(idNuevo);
-    await this.generarQR(idNuevo);
-  } catch (e) {
-    console.error('Error generando barcode/QR al crear usuario:', e);
-  }
-
-  return this.get(idNuevo);
-}
 
   async generarCodigosTodos() {
-    // Solo los que tienen code_scannable (documento configurado)
-    // y aún no tienen barcode o QR
     const usuarios = await this.ds.query(
       `SELECT id
          FROM usuarios
         WHERE code_scannable IS NOT NULL
-          AND (barcode_url IS NULL OR qr_url IS NULL)
-      `,
+          AND (barcode_url IS NULL OR qr_url IS NULL)`,
     );
 
     let procesados = 0;
@@ -197,16 +257,10 @@ async create(dto: any) {
       }
     }
 
-    return {
-      totalPendientes: usuarios.length,
-      procesados,
-      errores,
-    };
+    return { totalPendientes: usuarios.length, procesados, errores };
   }
 
-
   async update(id: string, dto: any) {
-    // 1. Obtener el usuario actual para comparar documento
     const actual = await this.get(id);
 
     const nuevoTipo =
@@ -219,7 +273,6 @@ async create(dto: any) {
         ? dto.numero_documento
         : actual.numero_documento;
 
-    // 2. Ver si cambió el documento
     const documentoCambio =
       nuevoTipo !== actual.tipo_documento ||
       nuevoNumero !== actual.numero_documento;
@@ -235,13 +288,11 @@ async create(dto: any) {
       nuevoPasswordHash = await bcrypt.hash(String(nuevoNumero), 10);
     }
 
-    // 3. Normalizar fecha_nacimiento: si viene "" -> null
     const fechaNacimientoParam =
       dto.fecha_nacimiento === '' || dto.fecha_nacimiento === undefined
         ? null
         : dto.fecha_nacimiento;
 
-    // 4. Ejecutar el UPDATE
     await this.ds.query(
       `UPDATE usuarios
         SET nombre              = COALESCE($2,  nombre),
@@ -264,7 +315,7 @@ async create(dto: any) {
         dto.nombre,
         dto.apellido_paterno,
         dto.apellido_materno,
-        fechaNacimientoParam,      // 👈 aquí ya NO va ""
+        fechaNacimientoParam,
         dto.rol_id,
         dto.sede_id,
         dto.area_id,
@@ -274,11 +325,10 @@ async create(dto: any) {
         dto.email_personal,
         dto.email_institucional,
         dto.telefono_celular,
-        nuevoPasswordHash,         // solo si cambió documento
+        nuevoPasswordHash,
       ],
     );
 
-    // 5. Si cambió el documento, regeneramos códigos
     if (documentoCambio) {
       await this.generarBarcode(id);
       await this.generarQR(id);
@@ -287,32 +337,41 @@ async create(dto: any) {
     return this.get(id);
   }
 
-
+  // =========================
+  // Foto / Códigos (Cloudinary)
+  // =========================
   async uploadFoto(id: string, buffer: Buffer, filename: string) {
-    const dir = process.env.UPLOAD_DIR || 'uploads';
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const out = join(dir, `foto_${id}.jpg`);
-    await sharp(buffer)
+    // 1) Procesar imagen
+    const jpgBuffer = await sharp(buffer)
       .resize(600, 600, { fit: 'cover' })
       .jpeg({ quality: 82 })
-      .toFile(out);
-    const url = `/files/${out.split(/[\\/]/).pop()}`;
+      .toBuffer();
+
+    // 2) Subir a Cloudinary (overwrite estable por usuario)
+    const secureUrl = await this.uploadImageBufferToCloudinary({
+      buffer: jpgBuffer,
+      folder: `${this.cloudFolder}/fotos`,
+      publicId: `foto_${id}`,
+      format: 'jpg',
+    });
+
+    // 3) Guardar URL final en BD
     await this.ds.query(`UPDATE usuarios SET foto_perfil_url=$2 WHERE id=$1`, [
       id,
-      url,
+      secureUrl,
     ]);
-    return { foto_perfil_url: url };
+
+    return { foto_perfil_url: secureUrl };
   }
 
   async generarBarcode(id: string) {
     const u = await this.get(id);
 
-    // code_scannable ya lo calcula Postgres
     const code =
       u.code_scannable ||
       ((u.tipo_documento === 'CE' ? 'C' : 'D') + u.numero_documento);
 
-    const png = await bwipToBuffer({
+    const pngBuffer = await bwipToBuffer({
       bcid: 'code128',
       text: code,
       scale: 3,
@@ -320,23 +379,20 @@ async create(dto: any) {
       includetext: true,
     });
 
-    const dir = process.env.UPLOAD_DIR || 'uploads';
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const secureUrl = await this.uploadImageBufferToCloudinary({
+      buffer: pngBuffer,
+      folder: `${this.cloudFolder}/barcodes`,
+      publicId: `barcode_${id}`,
+      format: 'png',
+    });
 
-    const out = join(dir, `barcode_${id}.png`);
-    fs.writeFileSync(out, png);
+    await this.ds.query(`UPDATE usuarios SET barcode_url=$2 WHERE id=$1`, [
+      id,
+      secureUrl,
+    ]);
 
-    const url = `/files/${out.split(/[\\/]/).pop()}`;
-
-    // 👇 IMPORTANTE: ya NO intentamos actualizar code_scannable
-    await this.ds.query(
-      `UPDATE usuarios SET barcode_url=$2 WHERE id=$1`,
-      [id, url],
-    );
-
-    return { barcode_url: url, code_scannable: u.code_scannable || code };
+    return { barcode_url: secureUrl, code_scannable: u.code_scannable || code };
   }
-
 
   async generarQR(id: string) {
     const u = await this.get(id);
@@ -345,25 +401,26 @@ async create(dto: any) {
       u.code_scannable ||
       ((u.tipo_documento === 'CE' ? 'C' : 'D') + u.numero_documento);
 
-    const dir = process.env.UPLOAD_DIR || 'uploads';
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    // ✅ Generar QR en memoria (sin disco)
+    const qrBuffer = await QRCode.toBuffer(code, { margin: 1, width: 512 });
 
-    const out = join(dir, `qr_${id}.png`);
-    await QRCode.toFile(out, code, { margin: 1, width: 512 });
+    const secureUrl = await this.uploadImageBufferToCloudinary({
+      buffer: qrBuffer,
+      folder: `${this.cloudFolder}/qrs`,
+      publicId: `qr_${id}`,
+      format: 'png',
+    });
 
-    const url = `/files/${out.split(/[\\/]/).pop()}`;
+    await this.ds.query(`UPDATE usuarios SET qr_url=$2 WHERE id=$1`, [
+      id,
+      secureUrl,
+    ]);
 
-    // 👇 Igual: solo actualizamos la URL, no el code_scannable
-    await this.ds.query(
-      `UPDATE usuarios SET qr_url=$2 WHERE id=$1`,
-      [id, url],
-    );
-
-    return { qr_url: url, code_scannable: u.code_scannable || code };
+    return { qr_url: secureUrl, code_scannable: u.code_scannable || code };
   }
-    async cambiarEstado(id: string, activo: boolean) {
+
+  async cambiarEstado(id: string, activo: boolean) {
     if (activo) {
-      // Reactivar usuario
       await this.ds.query(
         `UPDATE usuarios
            SET activo = TRUE,
@@ -373,7 +430,6 @@ async create(dto: any) {
         [id],
       );
     } else {
-      // Dar de baja usuario: guardamos la fecha de baja
       await this.ds.query(
         `UPDATE usuarios
            SET activo = FALSE,
@@ -383,11 +439,8 @@ async create(dto: any) {
       );
     }
 
-    // Devolvemos el usuario actualizado
     return this.get(id);
   }
-
-
 }
 
 function bwipToBuffer(opts: any): Promise<Buffer> {

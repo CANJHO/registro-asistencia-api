@@ -53,38 +53,71 @@ export class AsistenciasAdminController {
     return `${fecha} ${hh}`;
   }
 
+  // ✅ Helper SQL: rangos por día en Perú (America/Lima)
+  // Devuelve:
+  //   startUtcTs = inicio del día Perú, convertido a timestamptz (UTC)
+  //   endUtcTs   = fin del día Perú, convertido a timestamptz (UTC)
+  private dayRangePeruSql(col: string, paramIndex: number) {
+    // $n viene como 'YYYY-MM-DD'
+    // ($n::date)::timestamp = 'YYYY-MM-DD 00:00:00' (sin tz)
+    // AT TIME ZONE 'America/Lima' => timestamptz equivalente en UTC
+    const start = `( ($${paramIndex}::date)::timestamp AT TIME ZONE 'America/Lima' )`;
+    const end = `( (($${paramIndex}::date + interval '1 day')::timestamp) AT TIME ZONE 'America/Lima' )`;
+    return {
+      start,
+      end,
+      // para comparar:
+      ge: `${col} >= ${start}`,
+      lt: `${col} < ${end}`,
+    };
+  }
+
   @Get()
   @Roles('RRHH', 'Gerencia')
   list(
     @Query()
     q: {
       usuarioId?: string;
-      desde?: string;
-      hasta?: string;
+      desde?: string; // YYYY-MM-DD
+      hasta?: string; // YYYY-MM-DD
       estado?: string;
     },
   ) {
     const wh: string[] = [];
     const p: any[] = [];
+
     if (q.usuarioId) {
       p.push(q.usuarioId);
       wh.push(`a.usuario_id = $${p.length}`);
     }
+
+    // ✅ desde/hasta como día Perú
     if (q.desde) {
       p.push(q.desde);
-      wh.push(`a.fecha_hora >= $${p.length}::timestamp`);
+      const r = this.dayRangePeruSql('a.fecha_hora', p.length);
+      wh.push(r.ge);
     }
+
     if (q.hasta) {
       p.push(q.hasta);
-      wh.push(`a.fecha_hora <  ($${p.length}::timestamp + interval '1 day')`);
+      const r = this.dayRangePeruSql('a.fecha_hora', p.length);
+      wh.push(r.lt);
     }
+
     if (q.estado) {
       p.push(q.estado);
       wh.push(`a.estado_validacion = $${p.length}`);
     }
+
     const where = wh.length ? `WHERE ${wh.join(' AND ')}` : '';
+
     return this.ds.query(
-      `SELECT a.*,
+      `
+      SELECT
+        a.*,
+        -- ✅ Hora para mostrar en Perú (sin zona)
+        (a.fecha_hora AT TIME ZONE 'America/Lima') AS fecha_hora_pe,
+
         u.nombre,
         u.apellido_paterno,
         u.apellido_materno,
@@ -92,10 +125,11 @@ export class AsistenciasAdminController {
         (u.nombre || ' ' ||
          COALESCE(u.apellido_paterno,'') || ' ' ||
          COALESCE(u.apellido_materno,'')) AS nombre_completo
-          FROM asistencias a
-          JOIN usuarios u ON u.id = a.usuario_id
-          ${where}
-          ORDER BY a.fecha_hora DESC`,
+      FROM asistencias a
+      JOIN usuarios u ON u.id = a.usuario_id
+      ${where}
+      ORDER BY a.fecha_hora DESC
+      `,
       p,
     );
   }
@@ -106,7 +140,7 @@ export class AsistenciasAdminController {
     @Query()
     q: {
       usuarioId?: string;
-      fecha?: string;
+      fecha?: string; // YYYY-MM-DD
     },
   ) {
     if (!q.usuarioId) throw new BadRequestException('usuarioId es obligatorio');
@@ -137,13 +171,16 @@ export class AsistenciasAdminController {
       throw new BadRequestException('No existe usuario con ese usuarioId');
     }
 
+    // ✅ timeline por día Perú
     const rows = await this.ds.query(
       `
-      SELECT a.*
+      SELECT
+        a.*,
+        (a.fecha_hora AT TIME ZONE 'America/Lima') AS fecha_hora_pe
       FROM asistencias a
       WHERE a.usuario_id = $1
-        AND a.fecha_hora >= ($2::date)::timestamp
-        AND a.fecha_hora <  (($2::date + interval '1 day'))::timestamp
+        AND a.fecha_hora >= ( ($2::date)::timestamp AT TIME ZONE 'America/Lima' )
+        AND a.fecha_hora <  ( (($2::date + interval '1 day')::timestamp) AT TIME ZONE 'America/Lima' )
       ORDER BY a.fecha_hora ASC
       `,
       [q.usuarioId, q.fecha],
@@ -182,7 +219,8 @@ export class AsistenciasAdminController {
       const inserted = await this.ds.query(
         `
         INSERT INTO asistencias (usuario_id, fecha_hora, evento, tipo, metodo, estado_validacion)
-        VALUES ($1, $2::timestamp, $3, $4, $5, $6)
+        -- ✅ Interpretar fecha/hora ingresada como Perú y guardar bien
+        VALUES ($1, ($2::timestamp AT TIME ZONE 'America/Lima'), $3, $4, $5, $6)
         RETURNING id
         `,
         [body.usuarioId, fecha_hora, body.evento, tipo, metodo, estado_validacion],
@@ -193,7 +231,7 @@ export class AsistenciasAdminController {
       await this.bitacora.log(req, 'ASISTENCIA_MANUAL_CREAR', {
         asistenciaId,
         usuarioId: body.usuarioId,
-        fecha_hora,
+        fecha_hora, // lo que ingresó RRHH
         evento: body.evento,
         tipo,
         metodo,
@@ -246,7 +284,7 @@ export class AsistenciasAdminController {
   }
 
   @Put(':id/aprobar')
-  @Roles('RRHH')
+  @Roles('RRHH', 'Gerencia')
   async aprobar(
     @Req() req: Request,
     @Param('id') id: string,
@@ -305,221 +343,229 @@ export class AsistenciasAdminController {
     return { ok: true };
   }
 
-// ✅ NUEVO: pendiente más antiguo (1 usuario) - SOLO días anteriores (bloquea kiosko)
-@Get('pendiente')
-@Roles('RRHH', 'Gerencia')
-async pendiente(@Query() q: { usuarioId?: string }) {
-  if (!q.usuarioId) throw new BadRequestException('usuarioId es obligatorio');
+  // ✅ NUEVO: pendiente más antiguo (1 usuario) - SOLO días anteriores (bloquea kiosko)
+  @Get('pendiente')
+  @Roles('RRHH', 'Gerencia')
+  async pendiente(@Query() q: { usuarioId?: string }) {
+    if (!q.usuarioId) throw new BadRequestException('usuarioId es obligatorio');
 
-  const rows = await this.ds.query(
-    `
-    WITH dias AS (
-      SELECT
-        a.usuario_id,
-        (a.fecha_hora::date) AS fecha,
-        BOOL_OR(a.evento = 'JORNADA_IN'  AND a.estado_validacion <> 'rechazado') AS tiene_in,
-        BOOL_OR(a.evento = 'JORNADA_OUT' AND a.estado_validacion <> 'rechazado') AS tiene_out
-      FROM asistencias a
-      WHERE a.usuario_id = $1::uuid
-      GROUP BY a.usuario_id, (a.fecha_hora::date)
-    )
-    SELECT usuario_id, fecha AS fecha_pendiente
-    FROM dias
-    WHERE tiene_in = true
-      AND tiene_out = false
-      AND fecha < CURRENT_DATE          -- ✅ EXCLUYE HOY
-    ORDER BY fecha ASC
-    LIMIT 1
-    `,
-    [q.usuarioId],
-  );
-
-  return {
-    usuario_id: q.usuarioId,
-    fecha_pendiente: rows?.[0]?.fecha_pendiente ?? null,
-  };
-}
-
-// ✅ NUEVO: pendientes más antiguos (muchos usuarios) - SOLO días anteriores (bloquea kiosko)
-@Get('pendientes')
-@Roles('RRHH', 'Gerencia')
-async pendientes(@Query() q: { usuarioIds?: string }) {
-  const raw = (q.usuarioIds || '').trim();
-  if (!raw) return [];
-
-  const ids = raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  if (ids.length === 0) return [];
-
-  const rows = await this.ds.query(
-    `
-    WITH dias AS (
-      SELECT
-        a.usuario_id,
-        (a.fecha_hora::date) AS fecha,
-        BOOL_OR(a.evento = 'JORNADA_IN'  AND a.estado_validacion <> 'rechazado') AS tiene_in,
-        BOOL_OR(a.evento = 'JORNADA_OUT' AND a.estado_validacion <> 'rechazado') AS tiene_out
-      FROM asistencias a
-      WHERE a.usuario_id = ANY($1::uuid[])
-      GROUP BY a.usuario_id, (a.fecha_hora::date)
-    ),
-    pendientes AS (
-      SELECT
-        usuario_id,
-        MIN(fecha) AS fecha_pendiente
+    const rows = await this.ds.query(
+      `
+      WITH dias AS (
+        SELECT
+          a.usuario_id,
+          (a.fecha_hora AT TIME ZONE 'America/Lima')::date AS fecha,
+          BOOL_OR(a.evento = 'JORNADA_IN'  AND a.estado_validacion <> 'rechazado') AS tiene_in,
+          BOOL_OR(a.evento = 'JORNADA_OUT' AND a.estado_validacion <> 'rechazado') AS tiene_out
+        FROM asistencias a
+        WHERE a.usuario_id = $1::uuid
+        GROUP BY a.usuario_id, (a.fecha_hora AT TIME ZONE 'America/Lima')::date
+      )
+      SELECT usuario_id, fecha AS fecha_pendiente
       FROM dias
       WHERE tiene_in = true
         AND tiene_out = false
-        AND fecha < CURRENT_DATE         -- ✅ EXCLUYE HOY
-      GROUP BY usuario_id
-    )
-    SELECT usuario_id, fecha_pendiente
-    FROM pendientes
-    ORDER BY fecha_pendiente ASC
-    `,
-    [ids],
-  );
+        AND fecha < (now() AT TIME ZONE 'America/Lima')::date  -- ✅ EXCLUYE HOY (PERÚ)
+      ORDER BY fecha ASC
+      LIMIT 1
+      `,
+      [q.usuarioId],
+    );
 
-  return rows;
-}
-
-// ✅ NUEVO: Resumen del día para dashboard (Inicio)
-// 🔧 FIX: KPI "pendientes" = SOLO pendientes de días anteriores a la fecha seleccionada
-@Get('resumen-dia')
-@Roles('RRHH', 'Gerencia')
-async resumenDia(
-  @Query()
-  q: {
-    fecha?: string;      // YYYY-MM-DD
-    usuarioIds?: string; // CSV
-  },
-) {
-  const fecha = (q.fecha || '').trim();
-  if (!fecha) throw new BadRequestException('fecha es obligatorio (YYYY-MM-DD)');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
-    throw new BadRequestException('fecha inválida. Use YYYY-MM-DD');
-  }
-
-  const raw = (q.usuarioIds || '').trim();
-  if (!raw) {
     return {
-      fecha,
-      total_empleados: 0,
-      marcaron_ingreso: 0,
-      no_marcaron_ingreso: 0,
-      tardanzas: 0,
-      pendientes: 0,
-      ingresos: [],
-      top_tardanzas: [],
+      usuario_id: q.usuarioId,
+      fecha_pendiente: rows?.[0]?.fecha_pendiente ?? null,
     };
   }
 
-  const ids = raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // ✅ NUEVO: pendientes más antiguos (muchos usuarios) - SOLO días anteriores (bloquea kiosko)
+  @Get('pendientes')
+  @Roles('RRHH', 'Gerencia')
+  async pendientes(@Query() q: { usuarioIds?: string }) {
+    const raw = (q.usuarioIds || '').trim();
+    if (!raw) return [];
 
-  if (ids.length === 0) {
-    return {
-      fecha,
-      total_empleados: 0,
-      marcaron_ingreso: 0,
-      no_marcaron_ingreso: 0,
-      tardanzas: 0,
-      pendientes: 0,
-      ingresos: [],
-      top_tardanzas: [],
-    };
+    const ids = raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (ids.length === 0) return [];
+
+    const rows = await this.ds.query(
+      `
+      WITH dias AS (
+        SELECT
+          a.usuario_id,
+          (a.fecha_hora AT TIME ZONE 'America/Lima')::date AS fecha,
+          BOOL_OR(a.evento = 'JORNADA_IN'  AND a.estado_validacion <> 'rechazado') AS tiene_in,
+          BOOL_OR(a.evento = 'JORNADA_OUT' AND a.estado_validacion <> 'rechazado') AS tiene_out
+        FROM asistencias a
+        WHERE a.usuario_id = ANY($1::uuid[])
+        GROUP BY a.usuario_id, (a.fecha_hora AT TIME ZONE 'America/Lima')::date
+      ),
+      pendientes AS (
+        SELECT
+          usuario_id,
+          MIN(fecha) AS fecha_pendiente
+        FROM dias
+        WHERE tiene_in = true
+          AND tiene_out = false
+          AND fecha < (now() AT TIME ZONE 'America/Lima')::date  -- ✅ EXCLUYE HOY (PERÚ)
+        GROUP BY usuario_id
+      )
+      SELECT usuario_id, fecha_pendiente
+      FROM pendientes
+      ORDER BY fecha_pendiente ASC
+      `,
+      [ids],
+    );
+
+    return rows;
   }
 
-  // 1) Ingresos (primer JORNADA_IN por empleado en el día)
-  const ingresos = await this.ds.query(
-    `
-    WITH first_in AS (
+  // ✅ NUEVO: Resumen del día para dashboard (Inicio)
+  // 🔧 FIX: KPI "pendientes" = SOLO pendientes de días anteriores a la fecha seleccionada (PERÚ)
+  @Get('resumen-dia')
+  @Roles('RRHH', 'Gerencia')
+  async resumenDia(
+    @Query()
+    q: {
+      fecha?: string; // YYYY-MM-DD
+      usuarioIds?: string; // CSV
+    },
+  ) {
+    const fecha = (q.fecha || '').trim();
+    if (!fecha) throw new BadRequestException('fecha es obligatorio (YYYY-MM-DD)');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+      throw new BadRequestException('fecha inválida. Use YYYY-MM-DD');
+    }
+
+    const raw = (q.usuarioIds || '').trim();
+    if (!raw) {
+      return {
+        fecha,
+        total_empleados: 0,
+        marcaron_ingreso: 0,
+        no_marcaron_ingreso: 0,
+        tardanzas: 0,
+        pendientes: 0,
+        ingresos: [],
+        top_tardanzas: [],
+      };
+    }
+
+    const ids = raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (ids.length === 0) {
+      return {
+        fecha,
+        total_empleados: 0,
+        marcaron_ingreso: 0,
+        no_marcaron_ingreso: 0,
+        tardanzas: 0,
+        pendientes: 0,
+        ingresos: [],
+        top_tardanzas: [],
+      };
+    }
+
+    // ✅ rangos del día Perú para "fecha"
+    // start/end en UTC (timestamptz) para comparar con a.fecha_hora
+    const startDay = `(($2::date)::timestamp AT TIME ZONE 'America/Lima')`;
+    const endDay = `((($2::date + interval '1 day')::timestamp) AT TIME ZONE 'America/Lima')`;
+
+    // 1) Ingresos (primer JORNADA_IN por empleado en el día PERÚ)
+    const ingresos = await this.ds.query(
+      `
+      WITH first_in AS (
+        SELECT
+          a.usuario_id,
+          MIN(a.fecha_hora) AS fecha_hora_in
+        FROM asistencias a
+        WHERE a.usuario_id = ANY($1::uuid[])
+          AND a.evento = 'JORNADA_IN'
+          AND a.estado_validacion <> 'rechazado'
+          AND a.fecha_hora >= ${startDay}
+          AND a.fecha_hora <  ${endDay}
+        GROUP BY a.usuario_id
+      )
       SELECT
-        a.usuario_id,
-        MIN(a.fecha_hora) AS fecha_hora_in
-      FROM asistencias a
-      WHERE a.usuario_id = ANY($1::uuid[])
-        AND a.evento = 'JORNADA_IN'
-        AND a.estado_validacion <> 'rechazado'
-        AND a.fecha_hora >= ($2::date)::timestamp
-        AND a.fecha_hora <  (($2::date + interval '1 day'))::timestamp
-      GROUP BY a.usuario_id
-    )
-    SELECT
-      u.id AS usuario_id,
-      (u.nombre || ' ' || COALESCE(u.apellido_paterno,'') || ' ' || COALESCE(u.apellido_materno,'')) AS nombre_completo,
-      u.numero_documento,
-      fi.fecha_hora_in,
-      COALESCE(a.minutos_tarde, 0) AS minutos_tarde
-    FROM first_in fi
-    JOIN usuarios u ON u.id = fi.usuario_id
-    LEFT JOIN asistencias a
-      ON a.usuario_id = fi.usuario_id
-     AND a.evento = 'JORNADA_IN'
-     AND a.fecha_hora = fi.fecha_hora_in
-    ORDER BY fi.fecha_hora_in ASC
-    `,
-    [ids, fecha],
-  );
+        u.id AS usuario_id,
+        (u.nombre || ' ' || COALESCE(u.apellido_paterno,'') || ' ' || COALESCE(u.apellido_materno,'')) AS nombre_completo,
+        u.numero_documento,
+        fi.fecha_hora_in,
+        (fi.fecha_hora_in AT TIME ZONE 'America/Lima') AS fecha_hora_in_pe,
+        COALESCE(a.minutos_tarde, 0) AS minutos_tarde
+      FROM first_in fi
+      JOIN usuarios u ON u.id = fi.usuario_id
+      LEFT JOIN asistencias a
+        ON a.usuario_id = fi.usuario_id
+       AND a.evento = 'JORNADA_IN'
+       AND a.fecha_hora = fi.fecha_hora_in
+      ORDER BY fi.fecha_hora_in ASC
+      `,
+      [ids, fecha],
+    );
 
-  const marcaron_ingreso = ingresos.length;
+    const marcaron_ingreso = ingresos.length;
 
-  // 2) Tardanzas del día
-  const tardanzas = ingresos.filter((r: any) => Number(r?.minutos_tarde || 0) > 0).length;
+    // 2) Tardanzas del día
+    const tardanzas = ingresos.filter((r: any) => Number(r?.minutos_tarde || 0) > 0).length;
 
-  // 3) Pendientes BLOQUEANTES: días anteriores a la fecha seleccionada (tiene IN y no OUT)
-  const pendientesRows = await this.ds.query(
-    `
-    WITH dias AS (
-      SELECT
-        a.usuario_id,
-        (a.fecha_hora::date) AS fecha,
-        BOOL_OR(a.evento = 'JORNADA_IN'  AND a.estado_validacion <> 'rechazado') AS tiene_in,
-        BOOL_OR(a.evento = 'JORNADA_OUT' AND a.estado_validacion <> 'rechazado') AS tiene_out
-      FROM asistencias a
-      WHERE a.usuario_id = ANY($1::uuid[])
-        AND a.fecha_hora::date < $2::date          -- ✅ SOLO ANTERIORES
-      GROUP BY a.usuario_id, (a.fecha_hora::date)
-    ),
-    pendientes AS (
-      SELECT usuario_id, MIN(fecha) AS fecha_pendiente
-      FROM dias
-      WHERE tiene_in = true AND tiene_out = false
-      GROUP BY usuario_id
-    )
-    SELECT usuario_id, fecha_pendiente
-    FROM pendientes
-    `,
-    [ids, fecha],
-  );
+    // 3) Pendientes bloqueantes: días anteriores a la fecha seleccionada (PERÚ)
+    const pendientesRows = await this.ds.query(
+      `
+      WITH dias AS (
+        SELECT
+          a.usuario_id,
+          (a.fecha_hora AT TIME ZONE 'America/Lima')::date AS fecha,
+          BOOL_OR(a.evento = 'JORNADA_IN'  AND a.estado_validacion <> 'rechazado') AS tiene_in,
+          BOOL_OR(a.evento = 'JORNADA_OUT' AND a.estado_validacion <> 'rechazado') AS tiene_out
+        FROM asistencias a
+        WHERE a.usuario_id = ANY($1::uuid[])
+          AND (a.fecha_hora AT TIME ZONE 'America/Lima')::date < $2::date
+        GROUP BY a.usuario_id, (a.fecha_hora AT TIME ZONE 'America/Lima')::date
+      ),
+      pendientes AS (
+        SELECT usuario_id, MIN(fecha) AS fecha_pendiente
+        FROM dias
+        WHERE tiene_in = true AND tiene_out = false
+        GROUP BY usuario_id
+      )
+      SELECT usuario_id, fecha_pendiente
+      FROM pendientes
+      `,
+      [ids, fecha],
+    );
 
-  const pendientes = pendientesRows.length;
+    const pendientes = pendientesRows.length;
 
-  // 4) Totales
-  const total_empleados = ids.length;
-  const no_marcaron_ingreso = Math.max(0, total_empleados - marcaron_ingreso);
+    // 4) Totales
+    const total_empleados = ids.length;
+    const no_marcaron_ingreso = Math.max(0, total_empleados - marcaron_ingreso);
 
-  // 5) Top tardanzas
-  const top_tardanzas = ingresos
-    .filter((r: any) => Number(r?.minutos_tarde || 0) > 0)
-    .sort((a: any, b: any) => Number(b.minutos_tarde || 0) - Number(a.minutos_tarde || 0))
-    .slice(0, 8);
+    // 5) Top tardanzas
+    const top_tardanzas = ingresos
+      .filter((r: any) => Number(r?.minutos_tarde || 0) > 0)
+      .sort(
+        (a: any, b: any) =>
+          Number(b.minutos_tarde || 0) - Number(a.minutos_tarde || 0),
+      )
+      .slice(0, 8);
 
-  return {
-    fecha,
-    total_empleados,
-    marcaron_ingreso,
-    no_marcaron_ingreso,
-    tardanzas,
-    pendientes,
-    ingresos,
-    top_tardanzas,
-  };
-}
-
+    return {
+      fecha,
+      total_empleados,
+      marcaron_ingreso,
+      no_marcaron_ingreso,
+      tardanzas,
+      pendientes,
+      ingresos,
+      top_tardanzas,
+    };
+  }
 }

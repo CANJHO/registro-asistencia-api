@@ -952,9 +952,9 @@ export class ReportesController {
     res.end();
   }
 
-  // ==========================
-  // ✅ DETALLE - PDF (FIX TZ PERÚ)
-  // ==========================
+// ==========================
+// ✅ DETALLE - PDF (FIX TZ PERÚ + AUTO FIT ANCHO)
+// ==========================
   @Roles('Gerencia', 'RRHH')
   @Get('detalle-pdf')
   async detallePdf(
@@ -968,6 +968,7 @@ export class ReportesController {
       throw new BadRequestException('Debe indicar desde y hasta');
     }
 
+    // performance igual que excel
     if (!usuarioId && !sedeId) {
       const d1 = new Date(desde + 'T00:00:00');
       const d2 = new Date(hasta + 'T00:00:00');
@@ -1007,12 +1008,12 @@ export class ReportesController {
     const rows = await this.ds.query(
       `
       SELECT
-        ((a.fecha_hora AT TIME ZONE '${this.TZ_PE}')::date)            AS fecha_pe,
+        ((a.fecha_hora AT TIME ZONE '${this.TZ_PE}')::date)              AS fecha_pe,
         to_char((a.fecha_hora AT TIME ZONE '${this.TZ_PE}'), 'HH24:MI') AS hora,
 
         (u.nombre || ' ' ||
-         COALESCE(u.apellido_paterno,'') || ' ' ||
-         COALESCE(u.apellido_materno,'')) AS empleado,
+        COALESCE(u.apellido_paterno,'') || ' ' ||
+        COALESCE(u.apellido_materno,'')) AS empleado,
 
         COALESCE(s.nombre,'')  AS sede,
 
@@ -1051,47 +1052,73 @@ export class ReportesController {
       `attachment; filename="reporte_asistencias_detalle.pdf"`,
     );
 
+    // ✅ margen un poco menor para ganar ancho útil
     const doc = new PDFDocument({
-      margin: 28,
+      margin: 18,
       size: 'A4',
       layout: 'landscape',
     });
     doc.pipe(res);
 
-    await this.drawLogoTopLeft(doc, 14, 120);
+    // ✅ Logo arriba-izquierda
+    await this.drawLogoTopLeft(doc, 10, 120);
 
     doc
       .font('Helvetica-Bold')
       .fontSize(15)
       .fillColor('#111')
-      .text('Asistencia - Detalle de marcajes', 0, 22, { align: 'center' });
+      .text('Asistencia - Detalle de marcajes', 0, 18, { align: 'center' });
 
-    doc.moveDown(1.2);
     doc.font('Helvetica').fontSize(9).fillColor('#111');
-
-    const periodoTxt = `Periodo: ${this.formatDatePEFromDateOnly(
-      desde,
-    )} a ${this.formatDatePEFromDateOnly(hasta)}`;
-    const filtrosTxt = `Filtros: usuarioId=${usuarioId || '-'} | sedeId=${
-      sedeId || '-'
-    }`;
-
-    doc.text(periodoTxt, { align: 'center' });
-    doc.text(filtrosTxt, { align: 'center' });
-    doc.text(`Generado: ${this.generadoPE()}`, { align: 'center' });
-
-    doc.moveDown(0.8);
+    doc.text(
+      `Periodo: ${this.formatDatePEFromDateOnly(desde)} a ${this.formatDatePEFromDateOnly(hasta)}`,
+      0,
+      44,
+      { align: 'center' },
+    );
+    doc.text(`Filtros: usuarioId=${usuarioId || '-'} | sedeId=${sedeId || '-'}`, 0, 58, {
+      align: 'center',
+    });
+    doc.text(`Generado: ${this.generadoPE()}`, 0, 72, { align: 'center' });
 
     // ===== Tabla =====
-    const col = {
+    // (anchos base)
+    const colBase = {
       fecha: 70,
       hora: 46,
-      empleado: 240,
-      sede: 120,
+      empleado: 260,
+      sede: 130,
       tipo: 70,
-      evento: 190,
+      evento: 220,
       tarde: 70,
-      metodo: 110,
+      metodo: 120,
+    };
+
+    const baseTableWidth =
+      colBase.fecha +
+      colBase.hora +
+      colBase.empleado +
+      colBase.sede +
+      colBase.tipo +
+      colBase.evento +
+      colBase.tarde +
+      colBase.metodo;
+
+    const contentWidth =
+      doc.page.width - doc.page.margins.left - doc.page.margins.right;
+
+    // ✅ AUTO-FIT: si la tabla no entra, escala proporcionalmente columnas y paddings
+    const scale = Math.min(1, contentWidth / baseTableWidth);
+
+    const col = {
+      fecha: Math.floor(colBase.fecha * scale),
+      hora: Math.floor(colBase.hora * scale),
+      empleado: Math.floor(colBase.empleado * scale),
+      sede: Math.floor(colBase.sede * scale),
+      tipo: Math.floor(colBase.tipo * scale),
+      evento: Math.floor(colBase.evento * scale),
+      tarde: Math.floor(colBase.tarde * scale),
+      metodo: Math.floor(colBase.metodo * scale),
     };
 
     const tableWidth =
@@ -1104,17 +1131,17 @@ export class ReportesController {
       col.tarde +
       col.metodo;
 
-    const contentWidth =
-      doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    // ✅ empieza en el margen izquierdo (no lo centres si está justo)
+    const startX = doc.page.margins.left;
 
-    const startX =
-      doc.page.margins.left + Math.max(0, (contentWidth - tableWidth) / 2);
+    // ✅ tipografía/padding también reducen al escalar
+    const fontSize = Math.max(7.2, 8.5 * scale);
+    const paddingX = Math.max(2, Math.round(4 * scale));
+    const paddingY = Math.max(2, Math.round(4 * scale));
+    const minRowH = Math.max(14, Math.round(20 * scale));
 
-    let y = doc.y;
-
-    const paddingX = 4;
-    const paddingY = 4;
-    const minRowH = 20;
+    // ✅ empezamos debajo del header
+    let y = 92;
 
     const fmtFechaPE = (d: any) => {
       const dt = d instanceof Date ? d : new Date(d);
@@ -1125,7 +1152,7 @@ export class ReportesController {
     };
 
     const getTextHeight = (text: any, w: number, bold = false) => {
-      doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.5);
+      doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(fontSize);
       return doc.heightOfString(String(text ?? ''), {
         width: w - paddingX * 2,
         align: 'left',
@@ -1160,7 +1187,7 @@ export class ReportesController {
 
       doc
         .font(bold ? 'Helvetica-Bold' : 'Helvetica')
-        .fontSize(8.5)
+        .fontSize(fontSize)
         .fillColor('#111')
         .text(String(text ?? ''), x + paddingX, yPos + paddingY, {
           width: w - paddingX * 2,
@@ -1169,61 +1196,31 @@ export class ReportesController {
     };
 
     const drawHeader = () => {
-      const h = 22;
+      const h = Math.max(18, Math.round(22 * scale));
 
       let x = startX;
-      drawCell('Fecha', x, col.fecha, y, h, {
-        bold: true,
-        header: true,
-        align: 'center',
-      });
+      drawCell('Fecha', x, col.fecha, y, h, { bold: true, header: true, align: 'center' });
       x += col.fecha;
 
-      drawCell('Hora', x, col.hora, y, h, {
-        bold: true,
-        header: true,
-        align: 'center',
-      });
+      drawCell('Hora', x, col.hora, y, h, { bold: true, header: true, align: 'center' });
       x += col.hora;
 
-      drawCell('Empleado', x, col.empleado, y, h, {
-        bold: true,
-        header: true,
-      });
+      drawCell('Empleado', x, col.empleado, y, h, { bold: true, header: true });
       x += col.empleado;
 
-      drawCell('Sede', x, col.sede, y, h, {
-        bold: true,
-        header: true,
-        align: 'center',
-      });
+      drawCell('Sede', x, col.sede, y, h, { bold: true, header: true, align: 'center' });
       x += col.sede;
 
-      drawCell('Tipo', x, col.tipo, y, h, {
-        bold: true,
-        header: true,
-        align: 'center',
-      });
+      drawCell('Tipo', x, col.tipo, y, h, { bold: true, header: true, align: 'center' });
       x += col.tipo;
 
-      drawCell('Evento', x, col.evento, y, h, {
-        bold: true,
-        header: true,
-      });
+      drawCell('Evento', x, col.evento, y, h, { bold: true, header: true });
       x += col.evento;
 
-      drawCell('Min. tarde', x, col.tarde, y, h, {
-        bold: true,
-        header: true,
-        align: 'center',
-      });
+      drawCell('Min. tarde', x, col.tarde, y, h, { bold: true, header: true, align: 'center' });
       x += col.tarde;
 
-      drawCell('Método', x, col.metodo, y, h, {
-        bold: true,
-        header: true,
-        align: 'center',
-      });
+      drawCell('Método', x, col.metodo, y, h, { bold: true, header: true, align: 'center' });
 
       y += h;
     };
@@ -1250,9 +1247,7 @@ export class ReportesController {
       }
 
       let x = startX;
-      drawCell(fmtFechaPE(r.fecha_pe), x, col.fecha, y, rowH, {
-        align: 'center',
-      });
+      drawCell(fmtFechaPE(r.fecha_pe), x, col.fecha, y, rowH, { align: 'center' });
       x += col.fecha;
 
       drawCell(r.hora, x, col.hora, y, rowH, { align: 'center' });
@@ -1270,9 +1265,7 @@ export class ReportesController {
       drawCell(r.evento, x, col.evento, y, rowH);
       x += col.evento;
 
-      drawCell(String(r.minutos_tarde ?? 0), x, col.tarde, y, rowH, {
-        align: 'center',
-      });
+      drawCell(String(r.minutos_tarde ?? 0), x, col.tarde, y, rowH, { align: 'center' });
       x += col.tarde;
 
       drawCell(r.metodo, x, col.metodo, y, rowH, { align: 'center' });
@@ -1282,7 +1275,6 @@ export class ReportesController {
 
     doc.end();
   }
-
   // ============================================
   // Reporte maestro usuarios
   // ============================================

@@ -42,6 +42,22 @@ export class AsistenciasService {
     return !!(horario?.hora_inicio_2 && horario?.hora_fin_2);
   }
 
+  /** ✅ HOY PERÚ (YYYY-MM-DD) */
+  private fechaHoyPeru(): string {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Lima',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+
+    const y = parts.find((p) => p.type === 'year')?.value;
+    const m = parts.find((p) => p.type === 'month')?.value;
+    const d = parts.find((p) => p.type === 'day')?.value;
+
+    return `${y}-${m}-${d}`;
+  }
+
   /** 🔎 RESOLVER IDENTIFICADOR */
   private async resolverUsuarioId(identificador: string): Promise<string> {
     const db = await this.ds.query(
@@ -55,7 +71,9 @@ export class AsistenciasService {
     );
 
     if (!db.length) {
-      throw new BadRequestException('Empleado no encontrado para ese identificador');
+      throw new BadRequestException(
+        'Empleado no encontrado para ese identificador',
+      );
     }
 
     return db[0].id;
@@ -100,7 +118,10 @@ export class AsistenciasService {
     return rows[0] ?? null;
   }
 
-  private async tieneJornadaAbiertaAnterior(usuarioId: string, fechaStr: string): Promise<boolean> {
+  private async tieneJornadaAbiertaAnterior(
+    usuarioId: string,
+    fechaStr: string,
+  ): Promise<boolean> {
     const rows = await this.ds.query(
       `
       WITH last_by_day AS (
@@ -153,19 +174,16 @@ export class AsistenciasService {
     if (!hayRefrigerio) {
       // Turno corrido: solo puede cerrar jornada
       if (ultimoEvento === 'JORNADA_IN') return 'JORNADA_OUT';
-      throw new BadRequestException(
-        'Secuencia inválida. Comuníquese con RRHH.',
-      );
+      throw new BadRequestException('Secuencia inválida. Comuníquese con RRHH.');
     }
 
     // Con refrigerio
     if (ultimoEvento === 'JORNADA_IN') {
-      // ✅ Regla permiso (profesional y práctica)
-      // Si marca OUT MUCHO antes de la hora_fin del turno 1 => salida temprana (JORNADA_OUT)
+      // ✅ Regla permiso
       const finT1 = this.parseTimeToMinutes(horario?.hora_fin);
       if (finT1 != null) {
         const ahoraMin = this.ahoraMinutosLocal();
-        const umbralPermisoMin = 60; // <- si quieres lo cambiamos a 30/90
+        const umbralPermisoMin = 60;
         if (ahoraMin < finT1 - umbralPermisoMin) return 'JORNADA_OUT';
       }
       return 'REFRIGERIO_OUT';
@@ -193,10 +211,12 @@ export class AsistenciasService {
     const usuarioId = await this.resolverUsuarioId(identificador);
 
     const ahora = new Date();
-    const fechaStr = ahora.toISOString().slice(0, 10);
+    const fechaStr = this.fechaHoyPeru(); // ✅ HOY PERÚ
 
-    // ✅ Si tiene jornada pendiente de día anterior -> RRHH
-    const pendienteAnterior = await this.tieneJornadaAbiertaAnterior(usuarioId, fechaStr);
+    const pendienteAnterior = await this.tieneJornadaAbiertaAnterior(
+      usuarioId,
+      fechaStr,
+    );
     if (pendienteAnterior) {
       throw new BadRequestException(
         'Tiene una jornada pendiente de día anterior. Comuníquese con RRHH.',
@@ -204,24 +224,27 @@ export class AsistenciasService {
     }
 
     // Horario del día
-    const infoHorario = await this.horariosSvc.getHorarioDelDia(usuarioId, fechaStr);
+    const infoHorario = await this.horariosSvc.getHorarioDelDia(
+      usuarioId,
+      fechaStr,
+    );
     const horario = infoHorario?.horario || null;
     const excepcion = infoHorario?.excepcion || null;
 
     const esExcepcionNoLaborable = excepcion && excepcion.es_laborable === false;
     const esDescanso = horario?.es_descanso === true;
 
-    // Tú dijiste: gerencia quiere que si hay problemas, RRHH lo registre.
-    // Aquí: si es descanso/no laborable, bloqueamos automático y mandamos a RRHH.
     if (esDescanso || esExcepcionNoLaborable) {
-      throw new BadRequestException('Hoy no tiene jornada laborable. Comuníquese con RRHH.');
+      throw new BadRequestException(
+        'Hoy no tiene jornada laborable. Comuníquese con RRHH.',
+      );
     }
 
     const hayRefrigerio = this.tieneRefrigerio(horario);
 
     // Último evento del día
     const last = await this.ultimoEventoDelDia(usuarioId, fechaStr);
-    const ultimoEvento: EventoAsistencia | null = (last?.evento ?? null);
+    const ultimoEvento: EventoAsistencia | null = last?.evento ?? null;
 
     // Decidir siguiente evento
     const evento = this.decidirEventoSiguienteAuto({
@@ -234,7 +257,6 @@ export class AsistenciasService {
 
     // ✅ Geo (kiosko sin GPS)
     const geo = await this.validarGeo(usuarioId, undefined, undefined);
-
     const estado = 'aprobado';
 
     // ✅ Tardanza SOLO en JORNADA_IN
@@ -249,7 +271,7 @@ export class AsistenciasService {
       }
     }
 
-    // INSERT
+    // ✅ INSERT: guardar hora Perú aunque Postgres esté en UTC
     await this.ds.query(
       `INSERT INTO asistencias(
          usuario_id, fecha_hora, tipo, evento, metodo,
@@ -258,7 +280,7 @@ export class AsistenciasService {
          estado_validacion, minutos_tarde
        )
        VALUES(
-         $1, NOW(), $2, $3, $4,
+         $1, timezone('America/Lima', now()), $2, $3, $4,
          $5, $6, $7,
          $8, $9, $10,
          $11, $12
@@ -313,30 +335,37 @@ export class AsistenciasService {
     const usuarioId = await this.resolverUsuarioId(dto.usuarioId);
 
     const ahora = new Date();
-    const fechaStr = ahora.toISOString().slice(0, 10);
+    const fechaStr = this.fechaHoyPeru(); // ✅ HOY PERÚ
 
-    const pendienteAnterior = await this.tieneJornadaAbiertaAnterior(usuarioId, fechaStr);
+    const pendienteAnterior = await this.tieneJornadaAbiertaAnterior(
+      usuarioId,
+      fechaStr,
+    );
     if (pendienteAnterior) {
-      throw new BadRequestException('Tiene una jornada pendiente de día anterior. Comuníquese con RRHH.');
+      throw new BadRequestException(
+        'Tiene una jornada pendiente de día anterior. Comuníquese con RRHH.',
+      );
     }
 
     const geo = await this.validarGeo(usuarioId, dto.lat, dto.lng);
     const estado = 'aprobado';
 
-    const infoHorario = await this.horariosSvc.getHorarioDelDia(usuarioId, fechaStr);
+    const infoHorario = await this.horariosSvc.getHorarioDelDia(
+      usuarioId,
+      fechaStr,
+    );
     const horario = infoHorario?.horario || null;
     const excepcion = infoHorario?.excepcion || null;
 
     const esExcepcionNoLaborable = excepcion && excepcion.es_laborable === false;
     const esDescanso = horario?.es_descanso === true;
 
-    const hayRefrigerio = this.tieneRefrigerio(horario) && !esDescanso && !esExcepcionNoLaborable;
+    const hayRefrigerio =
+      this.tieneRefrigerio(horario) && !esDescanso && !esExcepcionNoLaborable;
 
-    // Último evento del día
     const last = await this.ultimoEventoDelDia(usuarioId, fechaStr);
-    const ultimoEvento: EventoAsistencia | null = (last?.evento ?? null);
+    const ultimoEvento: EventoAsistencia | null = last?.evento ?? null;
 
-    // ✅ Tu lógica manual basada en tipo (la dejo tal cual, por si la necesitas)
     const evento = this.decidirEventoSiguiente({
       tipo: dto.tipo,
       ultimoEvento,
@@ -355,8 +384,10 @@ export class AsistenciasService {
       }
     }
 
-    const gps = dto.lat != null && dto.lng != null ? { lat: dto.lat, lng: dto.lng } : null;
+    const gps =
+      dto.lat != null && dto.lng != null ? { lat: dto.lat, lng: dto.lng } : null;
 
+    // ✅ INSERT: guardar hora Perú aunque Postgres esté en UTC
     await this.ds.query(
       `INSERT INTO asistencias(
          usuario_id, fecha_hora, tipo, evento, metodo,
@@ -365,7 +396,7 @@ export class AsistenciasService {
          estado_validacion, minutos_tarde
        )
        VALUES(
-         $1, NOW(), $2, $3, $4,
+         $1, timezone('America/Lima', now()), $2, $3, $4,
          $5, $6, $7,
          $8, $9, $10,
          $11, $12
@@ -409,34 +440,53 @@ export class AsistenciasService {
     const { tipo, ultimoEvento, hayRefrigerio } = params;
 
     if (!ultimoEvento) {
-      if (tipo !== 'IN') throw new BadRequestException('Falta marcaje previo. Comuníquese con RRHH.');
+      if (tipo !== 'IN')
+        throw new BadRequestException(
+          'Falta marcaje previo. Comuníquese con RRHH.',
+        );
       return 'JORNADA_IN';
     }
 
     if (!hayRefrigerio) {
       if (ultimoEvento === 'JORNADA_IN') {
-        if (tipo !== 'OUT') throw new BadRequestException('Ya tiene ENTRADA registrada. Para salir, use SALIDA.');
+        if (tipo !== 'OUT')
+          throw new BadRequestException(
+            'Ya tiene ENTRADA registrada. Para salir, use SALIDA.',
+          );
         return 'JORNADA_OUT';
       }
-      throw new BadRequestException('Usted ya cerró su jornada hoy. Si hay un error, comuníquese con RRHH.');
+      throw new BadRequestException(
+        'Usted ya cerró su jornada hoy. Si hay un error, comuníquese con RRHH.',
+      );
     }
 
     switch (ultimoEvento) {
       case 'JORNADA_IN':
-        if (tipo !== 'OUT') throw new BadRequestException('Ya tiene ENTRADA registrada. Para refrigerio use SALIDA.');
+        if (tipo !== 'OUT')
+          throw new BadRequestException(
+            'Ya tiene ENTRADA registrada. Para refrigerio use SALIDA.',
+          );
         return 'REFRIGERIO_OUT';
 
       case 'REFRIGERIO_OUT':
-        if (tipo !== 'IN') throw new BadRequestException('Usted ya salió a refrigerio. Para volver, use ENTRADA.');
+        if (tipo !== 'IN')
+          throw new BadRequestException(
+            'Usted ya salió a refrigerio. Para volver, use ENTRADA.',
+          );
         return 'REFRIGERIO_IN';
 
       case 'REFRIGERIO_IN':
-        if (tipo !== 'OUT') throw new BadRequestException('Usted ya retornó de refrigerio. Para salir, use SALIDA.');
+        if (tipo !== 'OUT')
+          throw new BadRequestException(
+            'Usted ya retornó de refrigerio. Para salir, use SALIDA.',
+          );
         return 'JORNADA_OUT';
 
       case 'JORNADA_OUT':
       default:
-        throw new BadRequestException('Usted ya cerró su jornada hoy. Si hay un error, comuníquese con RRHH.');
+        throw new BadRequestException(
+          'Usted ya cerró su jornada hoy. Si hay un error, comuníquese con RRHH.',
+        );
     }
   }
 

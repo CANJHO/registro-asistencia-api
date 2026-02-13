@@ -16,7 +16,6 @@ export class AsistenciasService {
     private readonly horariosSvc: HorariosService,
   ) {}
 
-  // Distancia Haversine (metros)
   private distM(lat1: number, lng1: number, lat2: number, lng2: number) {
     const R = 6371000,
       toRad = (v: number) => (v * Math.PI) / 180;
@@ -37,12 +36,10 @@ export class AsistenciasService {
     return h * 60 + m;
   }
 
-  /** ✅ Refrigerio existe SOLO si hay 2 tramos completos */
   private tieneRefrigerio(horario: any | null): boolean {
     return !!(horario?.hora_inicio_2 && horario?.hora_fin_2);
   }
 
-  /** ✅ HOY PERÚ (YYYY-MM-DD) */
   private fechaHoyPeru(): string {
     const parts = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'America/Lima',
@@ -58,7 +55,6 @@ export class AsistenciasService {
     return `${y}-${m}-${d}`;
   }
 
-  /** ✅ Hora actual PERÚ en minutos (HH*60 + MM) - BLINDADO contra TZ servidor */
   private ahoraMinutosPeru(): number {
     const parts = new Intl.DateTimeFormat('en-GB', {
       timeZone: 'America/Lima',
@@ -72,7 +68,29 @@ export class AsistenciasService {
     return hh * 60 + mm;
   }
 
-  /** 🔎 RESOLVER IDENTIFICADOR */
+  // ✅ string Perú "YYYY-MM-DD HH:mm:ss"
+  private ahoraPeruSQL(): string {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Lima',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date());
+
+    const y = parts.find((p) => p.type === 'year')?.value ?? '0000';
+    const m = parts.find((p) => p.type === 'month')?.value ?? '00';
+    const d = parts.find((p) => p.type === 'day')?.value ?? '00';
+    const hh = parts.find((p) => p.type === 'hour')?.value ?? '00';
+    const mm = parts.find((p) => p.type === 'minute')?.value ?? '00';
+    const ss = parts.find((p) => p.type === 'second')?.value ?? '00';
+
+    return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+  }
+
   private async resolverUsuarioId(identificador: string): Promise<string> {
     const db = await this.ds.query(
       `SELECT id
@@ -93,7 +111,6 @@ export class AsistenciasService {
     return db[0].id;
   }
 
-  /** 🔎 OBTENER DATOS COMPLETOS DEL EMPLEADO */
   private async obtenerDatosEmpleado(usuarioId: string) {
     const rows = await this.ds.query(
       `
@@ -117,13 +134,15 @@ export class AsistenciasService {
   }
 
   private async ultimoEventoDelDia(usuarioId: string, fechaStr: string) {
+    // ✅ OJO: si fecha_hora es timestamptz, este filtro por date puede mezclarse por UTC.
+    // Mejor filtrar por día Perú:
     const rows = await this.ds.query(
       `
       SELECT evento, fecha_hora
         FROM asistencias
        WHERE usuario_id = $1
-         AND fecha_hora >= $2::date
-         AND fecha_hora <  ($2::date + interval '1 day')
+         AND fecha_hora >= (($2::date)::timestamp AT TIME ZONE 'America/Lima')
+         AND fecha_hora <  ((($2::date + interval '1 day')::timestamp) AT TIME ZONE 'America/Lima')
        ORDER BY fecha_hora DESC
        LIMIT 1
       `,
@@ -139,13 +158,13 @@ export class AsistenciasService {
     const rows = await this.ds.query(
       `
       WITH last_by_day AS (
-        SELECT (fecha_hora::date) AS d,
+        SELECT (fecha_hora AT TIME ZONE 'America/Lima')::date AS d,
                MAX(CASE WHEN evento='JORNADA_IN'  THEN 1 ELSE 0 END) AS has_in,
                MAX(CASE WHEN evento='JORNADA_OUT' THEN 1 ELSE 0 END) AS has_out
           FROM asistencias
          WHERE usuario_id = $1
-           AND fecha_hora::date < $2::date
-         GROUP BY (fecha_hora::date)
+           AND (fecha_hora AT TIME ZONE 'America/Lima')::date < $2::date
+         GROUP BY (fecha_hora AT TIME ZONE 'America/Lima')::date
          ORDER BY d DESC
          LIMIT 3
       )
@@ -176,10 +195,9 @@ export class AsistenciasService {
     }
 
     if (ultimoEvento === 'JORNADA_IN') {
-      // ✅ Regla permiso
       const finT1 = this.parseTimeToMinutes(horario?.hora_fin);
       if (finT1 != null) {
-        const ahoraMin = this.ahoraMinutosPeru(); // ✅ PERÚ
+        const ahoraMin = this.ahoraMinutosPeru();
         const umbralPermisoMin = 60;
         if (ahoraMin < finT1 - umbralPermisoMin) return 'JORNADA_OUT';
       }
@@ -206,10 +224,10 @@ export class AsistenciasService {
 
     if (!horario || esDescanso || esExcepcionNoLaborable) return null;
 
-    const minsMarcaje = this.ahoraMinutosPeru(); // ✅ PERÚ
+    const minsMarcaje = this.ahoraMinutosPeru();
 
     if (evento === 'JORNADA_IN') {
-      const tol = Number(horario.tolerancia_min ?? 15);
+      const tol = Number(horario.tolerancia_min ?? 15); // ✅ aquí el 15 es SOLO tolerancia, no TZ.
       const minsProg = this.parseTimeToMinutes(horario.hora_inicio);
       if (minsProg == null) return null;
 
@@ -228,9 +246,7 @@ export class AsistenciasService {
     return null;
   }
 
-  // ───────────────────────────────────────────────
   // ✅ MARCAJE AUTOMÁTICO (kiosko auto)
-  // ───────────────────────────────────────────────
   async marcarAutoDesdeKiosko(identificador: string) {
     if (!identificador?.trim()) {
       throw new BadRequestException('Identificador vacío');
@@ -288,7 +304,9 @@ export class AsistenciasService {
       esExcepcionNoLaborable,
     });
 
-    // ✅ FIX REAL: guardado en DB con timezone Perú (NO mandes fecha desde Node)
+    const fechaHoraPeru = this.ahoraPeruSQL(); // "YYYY-MM-DD HH:mm:ss" PERÚ
+
+    // ✅ FIX: guardar interpretando el string como HORA PERÚ (y convertir a UTC real)
     await this.ds.query(
       `INSERT INTO asistencias(
          usuario_id, fecha_hora, tipo, evento, metodo,
@@ -298,14 +316,15 @@ export class AsistenciasService {
        )
        VALUES(
          $1,
-         timezone('America/Lima', now()),
-         $2, $3, $4,
-         $5, $6, $7,
-         $8, $9, $10,
-         $11, $12
+         ($2::timestamp AT TIME ZONE 'America/Lima'),
+         $3, $4, $5,
+         $6, $7, $8,
+         $9, $10, $11,
+         $12, $13
        )`,
       [
         usuarioId,
+        fechaHoraPeru,
         tipo,
         evento,
         'scanner_barras',
@@ -335,9 +354,7 @@ export class AsistenciasService {
     };
   }
 
-  // ───────────────────────────────────────────────
-  // ✅ MARCAJE MANUAL (endpoint actual)
-  // ───────────────────────────────────────────────
+  // ✅ MARCAJE MANUAL / NORMAL
   async marcar(dto: {
     usuarioId: string;
     tipo: 'IN' | 'OUT';
@@ -405,7 +422,9 @@ export class AsistenciasService {
     const gps =
       dto.lat != null && dto.lng != null ? { lat: dto.lat, lng: dto.lng } : null;
 
-    // ✅ FIX REAL: guardado en DB con timezone Perú (NO mandes fecha desde Node)
+    const fechaHoraPeru = this.ahoraPeruSQL();
+
+    // ✅ FIX: igual aquí
     await this.ds.query(
       `INSERT INTO asistencias(
          usuario_id, fecha_hora, tipo, evento, metodo,
@@ -415,14 +434,15 @@ export class AsistenciasService {
        )
        VALUES(
          $1,
-         timezone('America/Lima', now()),
-         $2, $3, $4,
-         $5, $6, $7,
-         $8, $9, $10,
-         $11, $12
+         ($2::timestamp AT TIME ZONE 'America/Lima'),
+         $3, $4, $5,
+         $6, $7, $8,
+         $9, $10, $11,
+         $12, $13
        )`,
       [
         usuarioId,
+        fechaHoraPeru,
         dto.tipo,
         evento,
         dto.metodo,
@@ -517,7 +537,6 @@ export class AsistenciasService {
     });
   }
 
-  // VALIDACIÓN GEO REUTILIZADA
   async validarGeo(usuarioId: string, lat?: number, lng?: number) {
     if (lat == null || lng == null) {
       return {

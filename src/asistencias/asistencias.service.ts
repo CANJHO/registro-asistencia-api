@@ -72,6 +72,29 @@ export class AsistenciasService {
     return hh * 60 + mm;
   }
 
+  /** ✅ Fecha/hora actual PERÚ como string 'YYYY-MM-DD HH:mm:ss' (para guardar en timestamp sin TZ) */
+  private ahoraPeruSQL(): string {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Lima',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date());
+
+    const y = parts.find((p) => p.type === 'year')?.value ?? '0000';
+    const m = parts.find((p) => p.type === 'month')?.value ?? '00';
+    const d = parts.find((p) => p.type === 'day')?.value ?? '00';
+    const hh = parts.find((p) => p.type === 'hour')?.value ?? '00';
+    const mm = parts.find((p) => p.type === 'minute')?.value ?? '00';
+    const ss = parts.find((p) => p.type === 'second')?.value ?? '00';
+
+    return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+  }
+
   /** 🔎 RESOLVER IDENTIFICADOR */
   private async resolverUsuarioId(identificador: string): Promise<string> {
     const db = await this.ds.query(
@@ -306,6 +329,8 @@ export class AsistenciasService {
       esExcepcionNoLaborable,
     });
 
+    const fechaHoraPeru = this.ahoraPeruSQL(); // ✅ FIX inmediato
+
     await this.ds.query(
       `INSERT INTO asistencias(
          usuario_id, fecha_hora, tipo, evento, metodo,
@@ -314,13 +339,14 @@ export class AsistenciasService {
          estado_validacion, minutos_tarde
        )
        VALUES(
-         $1, timezone('America/Lima', now()), $2, $3, $4,
-         $5, $6, $7,
-         $8, $9, $10,
-         $11, $12
+         $1, $2::timestamp, $3, $4, $5,
+         $6, $7, $8,
+         $9, $10, $11,
+         $12, $13
        )`,
       [
         usuarioId,
+        fechaHoraPeru,
         tipo,
         evento,
         'scanner_barras',
@@ -422,6 +448,8 @@ export class AsistenciasService {
     const gps =
       dto.lat != null && dto.lng != null ? { lat: dto.lat, lng: dto.lng } : null;
 
+    const fechaHoraPeru = this.ahoraPeruSQL(); // ✅ FIX inmediato
+
     await this.ds.query(
       `INSERT INTO asistencias(
          usuario_id, fecha_hora, tipo, evento, metodo,
@@ -430,13 +458,14 @@ export class AsistenciasService {
          estado_validacion, minutos_tarde
        )
        VALUES(
-         $1, timezone('America/Lima', now()), $2, $3, $4,
-         $5, $6, $7,
-         $8, $9, $10,
-         $11, $12
+         $1, $2::timestamp, $3, $4, $5,
+         $6, $7, $8,
+         $9, $10, $11,
+         $12, $13
        )`,
       [
         usuarioId,
+        fechaHoraPeru,
         dto.tipo,
         evento,
         dto.metodo,

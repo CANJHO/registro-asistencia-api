@@ -175,18 +175,15 @@ export class AsistenciasService {
   }): EventoAsistencia {
     const { ultimoEvento, hayRefrigerio, horario } = params;
 
-    // Si no hay nada hoy, el primero SIEMPRE es ingreso de jornada
     if (!ultimoEvento || ultimoEvento === 'JORNADA_OUT') {
       return 'JORNADA_IN';
     }
 
     if (!hayRefrigerio) {
-      // Turno corrido: solo puede cerrar jornada
       if (ultimoEvento === 'JORNADA_IN') return 'JORNADA_OUT';
       throw new BadRequestException('Secuencia inválida. Comuníquese con RRHH.');
     }
 
-    // Con refrigerio
     if (ultimoEvento === 'JORNADA_IN') {
       // ✅ Regla permiso
       const finT1 = this.parseTimeToMinutes(horario?.hora_fin);
@@ -214,8 +211,6 @@ export class AsistenciasService {
    * - JORNADA_IN: aplica tolerancia (horario.tolerancia_min)
    * - REFRIGERIO_IN: NO aplica tolerancia
    * - resto: null
-   *
-   * NOTA: usa hora actual de PERÚ (blindado)
    */
   private calcularMinutosTarde(params: {
     evento: EventoAsistencia;
@@ -241,7 +236,6 @@ export class AsistenciasService {
 
     // 2) Retorno de refrigerio: SIN tolerancia
     if (evento === 'REFRIGERIO_IN') {
-      // si no hay tramo 2, no aplica
       const minsProg2 = this.parseTimeToMinutes(horario.hora_inicio_2);
       if (minsProg2 == null) return null;
 
@@ -253,7 +247,7 @@ export class AsistenciasService {
   }
 
   // ───────────────────────────────────────────────
-  // ✅ MARCAJE AUTOMÁTICO (nuevo)
+  // ✅ MARCAJE AUTOMÁTICO (kiosko auto)
   // ───────────────────────────────────────────────
   async marcarAutoDesdeKiosko(identificador: string) {
     if (!identificador?.trim()) {
@@ -261,8 +255,7 @@ export class AsistenciasService {
     }
 
     const usuarioId = await this.resolverUsuarioId(identificador);
-
-    const fechaStr = this.fechaHoyPeru(); // ✅ HOY PERÚ
+    const fechaStr = this.fechaHoyPeru();
 
     const pendienteAnterior = await this.tieneJornadaAbiertaAnterior(
       usuarioId,
@@ -274,7 +267,6 @@ export class AsistenciasService {
       );
     }
 
-    // Horario del día
     const infoHorario = await this.horariosSvc.getHorarioDelDia(
       usuarioId,
       fechaStr,
@@ -293,11 +285,9 @@ export class AsistenciasService {
 
     const hayRefrigerio = this.tieneRefrigerio(horario);
 
-    // Último evento del día
     const last = await this.ultimoEventoDelDia(usuarioId, fechaStr);
     const ultimoEvento: EventoAsistencia | null = last?.evento ?? null;
 
-    // Decidir siguiente evento
     const evento = this.decidirEventoSiguienteAuto({
       ultimoEvento,
       hayRefrigerio,
@@ -306,11 +296,9 @@ export class AsistenciasService {
 
     const tipo = this.tipoPorEvento(evento);
 
-    // ✅ Geo (kiosko sin GPS)
     const geo = await this.validarGeo(usuarioId, undefined, undefined);
     const estado = 'aprobado';
 
-    // ✅ Tardanza: JORNADA_IN (con tolerancia) + REFRIGERIO_IN (sin tolerancia)
     const minutos_tarde = this.calcularMinutosTarde({
       evento,
       horario,
@@ -318,7 +306,6 @@ export class AsistenciasService {
       esExcepcionNoLaborable,
     });
 
-    // ✅ INSERT: guardar hora Perú aunque Postgres esté en UTC
     await this.ds.query(
       `INSERT INTO asistencias(
          usuario_id, fecha_hora, tipo, evento, metodo,
@@ -364,7 +351,7 @@ export class AsistenciasService {
   }
 
   // ───────────────────────────────────────────────
-  // ✅ MARCAJE MANUAL (TU MISMO, pero con cálculo blindado)
+  // ✅ MARCAJE MANUAL (tu endpoint actual)
   // ───────────────────────────────────────────────
   async marcar(dto: {
     usuarioId: string;
@@ -380,5 +367,213 @@ export class AsistenciasService {
     }
 
     const usuarioId = await this.resolverUsuarioId(dto.usuarioId);
+    const fechaStr = this.fechaHoyPeru(); // ✅ HOY PERÚ
 
-    const fechaStr = this.fechaHoy
+    const pendienteAnterior = await this.tieneJornadaAbiertaAnterior(
+      usuarioId,
+      fechaStr,
+    );
+    if (pendienteAnterior) {
+      throw new BadRequestException(
+        'Tiene una jornada pendiente de día anterior. Comuníquese con RRHH.',
+      );
+    }
+
+    const geo = await this.validarGeo(usuarioId, dto.lat, dto.lng);
+    const estado = 'aprobado';
+
+    const infoHorario = await this.horariosSvc.getHorarioDelDia(
+      usuarioId,
+      fechaStr,
+    );
+    const horario = infoHorario?.horario || null;
+    const excepcion = infoHorario?.excepcion || null;
+
+    const esExcepcionNoLaborable = excepcion && excepcion.es_laborable === false;
+    const esDescanso = horario?.es_descanso === true;
+
+    if (esDescanso || esExcepcionNoLaborable) {
+      throw new BadRequestException(
+        'Hoy no tiene jornada laborable. Comuníquese con RRHH.',
+      );
+    }
+
+    const hayRefrigerio =
+      this.tieneRefrigerio(horario) && !esDescanso && !esExcepcionNoLaborable;
+
+    const last = await this.ultimoEventoDelDia(usuarioId, fechaStr);
+    const ultimoEvento: EventoAsistencia | null = last?.evento ?? null;
+
+    // ✅ tu lógica original (manual): decide por tipo IN/OUT
+    const evento = this.decidirEventoSiguiente({
+      tipo: dto.tipo,
+      ultimoEvento,
+      hayRefrigerio,
+    });
+
+    // ✅ calcular minutos tarde (JORNADA_IN con tolerancia / REFRIGERIO_IN sin)
+    const minutos_tarde = this.calcularMinutosTarde({
+      evento,
+      horario,
+      esDescanso,
+      esExcepcionNoLaborable,
+    });
+
+    const gps =
+      dto.lat != null && dto.lng != null ? { lat: dto.lat, lng: dto.lng } : null;
+
+    await this.ds.query(
+      `INSERT INTO asistencias(
+         usuario_id, fecha_hora, tipo, evento, metodo,
+         gps, evidencia_url, device_id,
+         punto_id, validacion_modo, distancia_m,
+         estado_validacion, minutos_tarde
+       )
+       VALUES(
+         $1, timezone('America/Lima', now()), $2, $3, $4,
+         $5, $6, $7,
+         $8, $9, $10,
+         $11, $12
+       )`,
+      [
+        usuarioId,
+        dto.tipo,
+        evento,
+        dto.metodo,
+        gps,
+        dto.evidenciaUrl ?? null,
+        dto.deviceId ?? null,
+        geo.puntoId,
+        geo.modo,
+        geo.distancia,
+        estado,
+        minutos_tarde,
+      ],
+    );
+
+    const empleado = await this.obtenerDatosEmpleado(usuarioId);
+
+    return {
+      ok: true,
+      estado,
+      evento,
+      horario,
+      excepcion,
+      geo,
+      minutos_tarde,
+      empleado,
+    };
+  }
+
+  /** ✅ TU FUNCIÓN manual decidirEventoSiguiente (igual a la tuya) */
+  private decidirEventoSiguiente(params: {
+    tipo: 'IN' | 'OUT';
+    ultimoEvento: EventoAsistencia | null;
+    hayRefrigerio: boolean;
+  }): EventoAsistencia {
+    const { tipo, ultimoEvento, hayRefrigerio } = params;
+
+    if (!ultimoEvento) {
+      if (tipo !== 'IN')
+        throw new BadRequestException(
+          'Falta marcaje previo. Comuníquese con RRHH.',
+        );
+      return 'JORNADA_IN';
+    }
+
+    if (!hayRefrigerio) {
+      if (ultimoEvento === 'JORNADA_IN') {
+        if (tipo !== 'OUT')
+          throw new BadRequestException(
+            'Ya tiene ENTRADA registrada. Para salir, use SALIDA.',
+          );
+        return 'JORNADA_OUT';
+      }
+      throw new BadRequestException(
+        'Usted ya cerró su jornada hoy. Si hay un error, comuníquese con RRHH.',
+      );
+    }
+
+    switch (ultimoEvento) {
+      case 'JORNADA_IN':
+        if (tipo !== 'OUT')
+          throw new BadRequestException(
+            'Ya tiene ENTRADA registrada. Para refrigerio use SALIDA.',
+          );
+        return 'REFRIGERIO_OUT';
+
+      case 'REFRIGERIO_OUT':
+        if (tipo !== 'IN')
+          throw new BadRequestException(
+            'Usted ya salió a refrigerio. Para volver, use ENTRADA.',
+          );
+        return 'REFRIGERIO_IN';
+
+      case 'REFRIGERIO_IN':
+        if (tipo !== 'OUT')
+          throw new BadRequestException(
+            'Usted ya retornó de refrigerio. Para salir, use SALIDA.',
+          );
+        return 'JORNADA_OUT';
+
+      case 'JORNADA_OUT':
+      default:
+        throw new BadRequestException(
+          'Usted ya cerró su jornada hoy. Si hay un error, comuníquese con RRHH.',
+        );
+    }
+  }
+
+  async marcarDesdeKiosko(dto: { identificador: string; tipo: 'IN' | 'OUT' }) {
+    return this.marcar({
+      usuarioId: dto.identificador,
+      tipo: dto.tipo,
+      metodo: 'scanner_barras',
+    });
+  }
+
+  // VALIDACIÓN GEO REUTILIZADA
+  async validarGeo(usuarioId: string, lat?: number, lng?: number) {
+    if (lat == null || lng == null) {
+      return {
+        ok: false,
+        modo: 'sin_gps',
+        distancia: null,
+        radio: null,
+        puntoId: null,
+      };
+    }
+
+    const asign = await this.ds.query(
+      `SELECT ap.punto_id, pt.lat, pt.lng, pt.radio_m
+         FROM asignaciones_punto ap
+         JOIN puntos_trabajo pt ON pt.id = ap.punto_id
+        WHERE ap.usuario_id = $1
+          AND ap.estado = 'VIGENTE'
+          AND pt.activo = TRUE
+          AND NOW() BETWEEN ap.fecha_inicio AND ap.fecha_fin
+        LIMIT 1`,
+      [usuarioId],
+    );
+
+    if (asign.length) {
+      const { punto_id, lat: plat, lng: plng, radio_m } = asign[0];
+      const d = this.distM(+plat, +plng, lat, lng);
+      return {
+        ok: d <= +radio_m,
+        modo: 'punto',
+        distancia: Math.round(d),
+        radio: +radio_m,
+        puntoId: punto_id,
+      };
+    }
+
+    return {
+      ok: false,
+      modo: 'sin_gps',
+      distancia: null,
+      radio: null,
+      puntoId: null,
+    };
+  }
+}
